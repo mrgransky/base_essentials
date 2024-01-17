@@ -265,6 +265,10 @@ $ kill PID_NUMBER
 # remove file remove list files from nikeQ_30_xxx.txt to nikeQ_59_xxx.txt
 $ rm -rfv /scratch/project_2004072/Nationalbiblioteket/trash/NLF_logs/nikeQ_{30..60}_*.out
 
+# symbolic link: use ln together with special pattern matching characters
+# links all the files with the extension ".xdh" in sub-directory project to current directory
+$ ln -s project/*.xdh $PWD
+
 # Ubuntu:
 
 # To check whether a package is installed or not:
