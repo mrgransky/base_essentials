@@ -1,0 +1,290 @@
+1. Connect to narvi/puhti account from this machine:
+	$ ssh -vi ~/.ssh/narvi_key alijani@narvi.tut.fi # my new precision DELL laptop
+	$ ssh -vi ~/narvi_key/xenial-narvi-key alijani@narvi.tut.fi
+	$ ssh alijanif@puhti.csc.fi
+
+2. mount working_folders from narvi computer to local: (type in local machine)
+	$ sshfs -o IdentityFile=/home/xenial/narvi_key/xenial-narvi-key alijani@narvi.tut.fi:example_folder /home/xenial/narvi_ws/
+	
+3. To unmount files from this machine:
+	$ fusermount -u /home/xenial/narvi_ws
+
+4. jupyter notebook:
+	#1) remote machine: i.e., Narvi, Puhti
+		$ jupyter notebook --no-browser --port=8787
+	
+	#2) in a new terminal on local machine
+		#$ ssh -i ~/narvi_key/xenial-narvi-key alijani@narvi.tut.fi -N -f -L localhost:8888:localhost:8787 alijani@narvi.tut.fi
+		$ ssh -i ~/narvi_key/xenial-narvi-key alijani@narvi.tut.fi -N -f -L -v -v 8787:127.0.0.1:8787 alijani@narvi.tut.fi
+		#$ ssh -i ~/narvi_key/xenial-narvi-key alijani@narvi.tut.fi -N -f -L 8889:[::1]:8889 alijani@narvi.tut.fi
+		
+		# puhti:
+		#$ ssh -f alijanif@puhti.csc.fi -L 8382:127.0.0.1:7575 -N
+		$ ssh -f alijanif@puhti.csc.fi -L 8889:[::1]:8889 -N
+	
+	open firefox:
+		token pass from remote terminal 
+		
+5. copy from local -> server:
+	# Narvi:
+	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" /home/xenial/Datasets/Nationalbiblioteket/NLF_Pseudonymized_Logs alijani@narvi.tut.fi:/lustre/sgn-data/vision/
+	
+	# Puhti:
+	$ rsync -avzhm --stats --progress ~/Datasets/Oxford_RobotCar/rtk/2015-11-12-11-22-05/rtk.csv alijanif@puhti.csc.fi:/scratch/project_2004072/OxfordRobotCar/2015-11-12-11-22-05/gps/
+	$ rsync -avzhm --stats --progress ~/Datasets/Nationalbiblioteket/*.zip alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket
+
+6. copy from server -> local:
+	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi://lustre/sgn-data/Nationalbiblioteket/dataframes/*.json /home/xenial/Datasets/Nationalbiblioteket
+	$ 
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/retrievalSfM120k-vgg16-gem_th{5.0,10.0,15.0,20.0}* ~/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/results ~/Datasets/Nationalbiblioteket
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes/*.json /home/xenial/Datasets/Nationalbiblioteket
+
+	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/OxfordRobotCar/my_imgs /home/xenial/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/retrievalSfM120k-vgg16-gem_th25.0m_AllQs /home/xenial/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/robotcar-oxford-train_mono_left_undistorted_velodyne_left_ranges_resnet50_gem_whiten_ep50_contrastive_m0.5_adam_lr1.0e-06_wd1.0e-06_3negs_qsz10_psz200_bsz5_img1024_th5.0m_Que123/plots* ~/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/cold_results/cold-train_std_cam_resnet50_pooling_spoc_whiten_ep50_contrastive_m0.5_adam_lr1.0e-06_wd1.0e-06_3negs_qsz10_psz200_bsz5_img640_th0.25m_Que123/plots* ~/WS_Farid/OxfordRobotCar/results/COLD
+	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/cold_results ~/WS_Farid/OxfordRobotCar/results/COLD
+
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/robotcar-oxford-train_velodyne_left_ranges_resnet50_gem_whiten_ep50_contrastive_m0.5_adam_lr1.0e-06_wd1.0e-06_3negs_qsz10_psz200_bsz5_img1024_th5.0m_Que123/plots* ~/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/retrieval_train-resnet50-gem_th* /home/xenial/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:WS_Farid/OxfordRobotCar/VPR_IR/Tietotalo_log/floor1_double_check_r01g06_7339157.out /home/xenial/WS_Farid/OxfordRobotCar/VPR_IR/Tietotalo_log
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x*/*.tar.gz /home/farid/datasets/compressed_concatenated_SPMs
+	$ scp alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x58/concat_x58.tar.gz dataset
+
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/GANs/misc/*.png /home/farid/datasets/GANs
+
+########################## CONDA ##########################
+7. package handling:
+	#update conda:
+	$ conda update -n base -c defaults conda
+	
+	$ conda info
+	$ conda create -n py39 python=3.9 -y
+	$ conda remove -n py39 --all -y
+	$ conda remove -n myenv scipy
+
+	$ conda activate py39
+	$ pip install -r pip_narvi_requirements.txt # to install ready made packages in txt file (CBIR)
+	
+	$ conda env list 
+	# OR
+	$ conda info --envs
+	# update all packages in a virtual env 
+	$ conda update --all
+
+	$ source ~/WS_Farid/essentials/gpu_intrc.sh
+	
+	$ conda config --add channels conda-forge # prioritize conda-forge
+	$ conda config --remove channels conda-forge
+	
+	$ conda config --show 			# show all config
+	$ conda config --show-sources
+
+	$ cat ~/.condarc #  1) conda-forge , 2) defaults
+	# or...
+	$ conda config --show channels
+
+	$ conda search pytorch -v
+	$ #conda install pytorch torchvision cudatoolkit -c anaconda
+	$ 
+	$ conda remove scipy curl # 2 packages from current environment
+	
+	# all installed packages in my conda env
+	$ conda list --show-channel-urls 
+
+	$ python -c "import caffe; caffe.set_mode_gpu(); caffe.set_device(0)"
+	
+	$ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+	$ python -c "import cv2; print(cv2.__version__)"
+	
+	source /projappl/project_2004072/miniconda3/etc/profile.d/conda.sh
+
+############################ Puhti Conda ###########################
+$ module purge
+$ module load tykky
+$ cd /projappl/project_2004072
+# modify packages.sh file as needed! <<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>
+$ conda-containerize update CondaCSC --post-install packages.sh
+$ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
+
+########################## SLURM ##########################
+#how to see which job I am running:
+	$ watch squeue -u alijani # monitor every 2 sec
+#run interactive cpu/gpu: to debug and run something...
+	$ source interactive_cpu.sh
+# OR... 
+	$ source interactive_gpu.sh 
+
+#run batch mode cpu/gpu:
+	$ sbatch batch_cpu.sh
+	$ sbatch --test-only puhti_sbatch.sh # find out when your job is estimated to run
+	# sbatch: Job 13902002 to start at 2022-10-27T11:41:31 using 10 processors on nodes r03c21 in partition longrun
+
+# OR... 
+	$ sbatch batch_gpu.sh
+#cancel 1 job:
+	$ scancel job_id
+#cancel all jobs:
+	$ scancel -u alijani
+
+# sinfo valid type specs, https://slurm.schedmd.com/sinfo.html
+$ sinfo -o "%15P %3c %10m %11l %30G %14e %5D %25f"
+
+# This command will print the following information for each partition:
+# 	%15P: Partition name
+# 	%3c: Current number of jobs running in the partition
+# 	%10m: Maximum number of jobs that can run in the partition simultaneously
+# 	%11l: Number of nodes in the partition
+# 	%30G: Total amount of memory in the partition
+# 	%14e: Amount of memory currently in use in the partition
+# 	%5D: Number of nodes currently available in the partition
+# 	%25f: Current fair share of the partition
+
+$ sacctmgr list user $USER withassoc
+
+# 
+$ squeue -u alijanif --long
+
+# Analyzing currently running jobs with sstat:
+$ sstat --jobs=your_job-id
+
+# Show Job History and Accounting:
+$ sacct -j <your_job_number> -o jobid,Partition,start,end,state,CPUTime,AllocCPUS,ExitCode
+$ sacct -u alijanif
+
+# look at a specific job in more detail, whether your job efficiently used the allocated resources.
+$ seff <Jobid>
+
+# view more verbose information about your job, by using the job id and running the following command:
+#Note: This only works for jobs that are in currently in queue:
+$ scontrol show job <your_job_number>
+$ scontrol show partition <partition_name>
+$ scontrol show <ENTITY>
+# from --help:
+# <ENTITY> may be "aliases", "assoc_mgr", "bbstat", "burstBuffer", 
+# "config", "daemons", "dwstat", "federation", "frontend",  
+# "hostlist", "hostlistsorted", "hostnames", "job",           
+# "licenses", "node", "partition", "reservation", "slurmd", 
+# "step", or "topology"
+
+$ watch nvidia-smi --format=csv --query-gpu=memory.total,utilization.gpu,memory.used,memory.free
+
+$ find Nordland/results/GoogleNet/*.csv -mtime -3 -print
+$ find Nordland/results/VGG16/*.csv -mtime -3 -exec rm {} +
+########################## SLURM ##########################
+
+########################## VSCODE ##########################
+cttl + K + 0: fold all codes
+cttl + k + j: unfold all codes
+
+cttl + PgUp/ PgDn: switch between terminals/tabs
+########################## VSCODE ##########################
+
+##################################################
+# Counting Files in the Current Directory
+$ ls -l /path_to_dir | wc -l
+
+# avoid __pycache__ # DON NOT DELETE THIS LINE!!!!
+sys.dont_write_bytecode = True 
+##################################################
+
+############################## Github ##############################
+# Make Git store the username and password and it will never ask for them:
+$ git config --global credential.helper store
+
+export PYTHONDONTWRITEBYTECODE=1
+
+# go back in git commit (2 steps back):
+$ git reset HEAD~2
+# chnage some files and continue new commits
+
+# Github token, generated August 25 2021
+mrgransky
+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
+
+# store username & password for a session (cache it)
+$ git config --global credential.helper cache
+
+# store username & password permanent
+$ git config credential.helper store
+
+# to remove commit:
+$ git log
+$ git reset --hard HEAD~1 # once at the time to go back!
+
+# Exclude folder or file to be transfered to git repository:
+# in git project directory:
+$ code .gitignore
+# copy files or folder names u don't want to push to git repo
+# example copy these into .gitignore file u created!:
+results
+__pycache__
+.gitignore
+
+# git pull from branch "farid":
+$ git checkout farid # not required every single time!
+$ git pull origin farid -v
+############################## Github ##############################
+
+# How to download Oxford Radar RobotCar Dataset with Command line:
+$ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder /lustre/sgn-data/vision/OxfordRadarRobotCar --sensors="Grasshopper 2 Right,Velodyne HDL-32E Left Pointcloud,Velodyne HDL-32E Right,Bumblebee XB3 Visual Odometry,Navtech CTS350-X Radar"
+$ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder /lustre/sgn-data/vision/OxfordRadarRobotCar --sensors="Velodyne HDL-32E Left Pointcloud,Velodyne HDL-32E Right Pointcloud"
+
+# puhti
+$ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder /scratch/project_2004072/OxfordRadarRobotCar --sensors="Grasshopper 2 Left,Velodyne HDL-32E Left,Bumblebee XB3 Visual Odometry,NovAtel GPS / INS"
+$ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder ~/Datasets/Oxford_Radar_RobotCar --sensors="Grasshopper 2 Left,Velodyne HDL-32E Left,Bumblebee XB3 Visual Odometry,NovAtel GPS / INS"
+
+############################## Pytorch CUDA info ##############################
+>>> import torch
+
+>>> torch.cuda.is_available()
+True
+
+>>> torch.cuda.device_count()
+1
+
+>>> torch.cuda.current_device()
+0
+
+>>> torch.cuda.device(0)
+<torch.cuda.device at 0x7efce0b03be0>
+
+>>> torch.cuda.get_device_name(0)
+'GeForce GTX 950M'
+
+##################################################################################################
+# nohup:
+$ nohup python -u RecSys_usr_token.py --inputDF /scratch/project_2004072/Nationalbiblioteket/dataframes/nikeY.docworks.lib.helsinki.fi_access_log.07_02_2021.log.dump --qphrase 'åbo akademi' --lmMethod 'stanza' > nikeY_stanza.out &
+
+# kill nohup in terminal:
+$ jobs -l # get pid of the running jobs
+
+$ kill PID_NUMBER
+
+# remove file remove list files from nikeQ_30_xxx.txt to nikeQ_59_xxx.txt
+$ rm -rfv /scratch/project_2004072/Nationalbiblioteket/trash/NLF_logs/nikeQ_{30..60}_*.out
+
+# Ubuntu:
+
+# To check whether a package is installed or not:
+$ dpkg -l | less # walk through all installed packages
+$ dpkg -l {package_name}
+$ dpkg -l vlc # example 
+
+# tar multiple files: #TODO: python code at concat_dfs.py at the end!!!
+$ cd /path/to/dir
+$ tar -cvzf my_files.tar.gz file1 file2
+
+# copy whole folder from google drive:
+# find the folder id by navigating to the folder and copy & paste it:
+$ gdown --folder 1rstAr9W4PC2ueHyLH-Igoxifrzv7aD2Z
+
+# everytime something changes...
+# pod name:
+$ oc get pods | grep Running
+$ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs recsys-44-tzf5s:/opt/app-root/src/datasets
+
+####################################################### OpenShift Container Platform ########################################################
+$ oc login https://rahti.csc.fi:8443 --token=qdnVmvVcxQzGYIS0cGYg4O2ZfNVIdFoQJ4WV4lyNOYg
+$ o
