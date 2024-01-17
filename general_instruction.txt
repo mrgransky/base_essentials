@@ -199,9 +199,14 @@ export PYTHONDONTWRITEBYTECODE=1
 $ git reset HEAD~2
 # chnage some files and continue new commits
 
-# Github token, generated August 25 2021
+# Github username:
 mrgransky
-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
+
+# Github token, generated August 25 2021
+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 # check for expiration
+
+# Github token, generated Jan 17 2024
+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 
 
 # store username & password for a session (cache it)
 $ git config --global credential.helper cache
