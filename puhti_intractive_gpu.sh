@@ -11,4 +11,5 @@ srun -J intrctv_gpuTEST --account=project_2004072 --partition=gputest --gres=gpu
 # changing is allowed:
 # srun -J gpu_interactive --account=project_2004072 --partition=gpu --gres=gpu:v100:1 --time=0-05:15:00 --mem=256G --ntasks=1 --cpus-per-task=16 --pty /bin/bash -i
 
+# works after exit and source:
 module load git
