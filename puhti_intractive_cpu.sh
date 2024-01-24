@@ -1,9 +1,7 @@
 #!/bin/bash
 
 # to run this file:
-# $ bash puhti_intractive_cpu.sh
-# OR ...
-# $ source puhti_intractive_cpu.sh
+# $ source $HOME/WS_Farid/base_essentials/puhti_intractive_cpu.sh
 
 # Image_Retrieval_TUNI
 # srun -J intrtv_cpuTEST --account=project_2004072 --partition=test --time=00-00:15:00 --mem=373G --ntasks=1 --cpus-per-task=40 --pty /bin/bash -i

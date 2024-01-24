@@ -1,6 +1,14 @@
-1. Connect to narvi/puhti account from this machine:
-	$ ssh -vi ~/.ssh/narvi_key alijani@narvi.tut.fi # my new precision DELL laptop
-	$ ssh -vi ~/narvi_key/xenial-narvi-key alijani@narvi.tut.fi
+0. Connect to Pouta server:
+$ ssh -vi $HOME/.ssh/nlf_key ubuntu@128.214.254.157
+$ ssh ubuntu@128.214.254.157 # should work with no need to keys
+$ nslookup 128.214.254.157
+
+# to access your django app from VM
+$ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
+
+1. Connect to narvi/puhti account from Local machine:
+	$ ssh -vi $HOME/.ssh/narvi_key alijani@narvi.tut.fi # my new precision DELL laptop
+	$ ssh -vi $HOME/narvi_key/xenial-narvi-key alijani@narvi.tut.fi
 	$ ssh alijanif@puhti.csc.fi
 
 2. mount working_folders from narvi computer to local: (type in local machine)
@@ -14,9 +22,9 @@
 		$ jupyter notebook --no-browser --port=8787
 	
 	#2) in a new terminal on local machine
-		#$ ssh -i ~/narvi_key/xenial-narvi-key alijani@narvi.tut.fi -N -f -L localhost:8888:localhost:8787 alijani@narvi.tut.fi
-		$ ssh -i ~/narvi_key/xenial-narvi-key alijani@narvi.tut.fi -N -f -L -v -v 8787:127.0.0.1:8787 alijani@narvi.tut.fi
-		#$ ssh -i ~/narvi_key/xenial-narvi-key alijani@narvi.tut.fi -N -f -L 8889:[::1]:8889 alijani@narvi.tut.fi
+		#$ ssh -i $HOME/narvi_key/xenial-narvi-key alijani@narvi.tut.fi -N -f -L localhost:8888:localhost:8787 alijani@narvi.tut.fi
+		$ ssh -i $HOME/narvi_key/xenial-narvi-key alijani@narvi.tut.fi -N -f -L -v -v 8787:127.0.0.1:8787 alijani@narvi.tut.fi
+		#$ ssh -i $HOME/narvi_key/xenial-narvi-key alijani@narvi.tut.fi -N -f -L 8889:[::1]:8889 alijani@narvi.tut.fi
 		
 		# puhti:
 		#$ ssh -f alijanif@puhti.csc.fi -L 8382:127.0.0.1:7575 -N
@@ -27,32 +35,37 @@
 		
 5. copy from local -> server:
 	# Narvi:
-	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" /home/xenial/Datasets/Nationalbiblioteket/NLF_Pseudonymized_Logs alijani@narvi.tut.fi:/lustre/sgn-data/vision/
+	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" /home/xenial/Datasets/Nationalbiblioteket/NLF_Pseudonymized_Logs alijani@narvi.tut.fi:/lustre/sgn-data/vision/
 	
 	# Puhti:
-	$ rsync -avzhm --stats --progress ~/Datasets/Oxford_RobotCar/rtk/2015-11-12-11-22-05/rtk.csv alijanif@puhti.csc.fi:/scratch/project_2004072/OxfordRobotCar/2015-11-12-11-22-05/gps/
-	$ rsync -avzhm --stats --progress ~/Datasets/Nationalbiblioteket/*.zip alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket
-
+	$ rsync -avzhm --stats --progress $HOME/Datasets/Oxford_RobotCar/rtk/2015-11-12-11-22-05/rtk.csv alijanif@puhti.csc.fi:/scratch/project_2004072/OxfordRobotCar/2015-11-12-11-22-05/gps/
+	$ rsync -avzhm --stats --progress $HOME/Datasets/Nationalbiblioteket/*.zip alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket
+	
+	# Pouta
+	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs
+	$ rsync -avzh --stats --progress $HOME/datasets/sentinel2-l1c* ubuntu@128.214.254.157:datasets
+	
 6. copy from server -> local:
-	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi://lustre/sgn-data/Nationalbiblioteket/dataframes/*.json /home/xenial/Datasets/Nationalbiblioteket
+	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/Nationalbiblioteket/dataframes/*.json /home/xenial/Datasets/Nationalbiblioteket
 	$ 
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/retrievalSfM120k-vgg16-gem_th{5.0,10.0,15.0,20.0}* ~/WS_Farid/OxfordRobotCar/results/RC
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/results ~/Datasets/Nationalbiblioteket
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/retrievalSfM120k-vgg16-gem_th{5.0,10.0,15.0,20.0}* $HOME/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/results $HOME/Datasets/Nationalbiblioteket
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes/*.json /home/xenial/Datasets/Nationalbiblioteket
 
-	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/OxfordRobotCar/my_imgs /home/xenial/WS_Farid/OxfordRobotCar/results/RC
-	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/retrievalSfM120k-vgg16-gem_th25.0m_AllQs /home/xenial/WS_Farid/OxfordRobotCar/results/RC
-	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/robotcar-oxford-train_mono_left_undistorted_velodyne_left_ranges_resnet50_gem_whiten_ep50_contrastive_m0.5_adam_lr1.0e-06_wd1.0e-06_3negs_qsz10_psz200_bsz5_img1024_th5.0m_Que123/plots* ~/WS_Farid/OxfordRobotCar/results/RC
-	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/cold_results/cold-train_std_cam_resnet50_pooling_spoc_whiten_ep50_contrastive_m0.5_adam_lr1.0e-06_wd1.0e-06_3negs_qsz10_psz200_bsz5_img640_th0.25m_Que123/plots* ~/WS_Farid/OxfordRobotCar/results/COLD
-	$ rsync -avzh --stats --progress -e "ssh -i ~/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/cold_results ~/WS_Farid/OxfordRobotCar/results/COLD
+	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/OxfordRobotCar/my_imgs /home/xenial/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/retrievalSfM120k-vgg16-gem_th25.0m_AllQs /home/xenial/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/robotcar-oxford-train_mono_left_undistorted_velodyne_left_ranges_resnet50_gem_whiten_ep50_contrastive_m0.5_adam_lr1.0e-06_wd1.0e-06_3negs_qsz10_psz200_bsz5_img1024_th5.0m_Que123/plots* $HOME/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/cold_results/cold-train_std_cam_resnet50_pooling_spoc_whiten_ep50_contrastive_m0.5_adam_lr1.0e-06_wd1.0e-06_3negs_qsz10_psz200_bsz5_img640_th0.25m_Que123/plots* $HOME/WS_Farid/OxfordRobotCar/results/COLD
+	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/cold_results $HOME/WS_Farid/OxfordRobotCar/results/COLD
 
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/robotcar-oxford-train_velodyne_left_ranges_resnet50_gem_whiten_ep50_contrastive_m0.5_adam_lr1.0e-06_wd1.0e-06_3negs_qsz10_psz200_bsz5_img1024_th5.0m_Que123/plots* ~/WS_Farid/OxfordRobotCar/results/RC
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/robotcar-oxford-train_velodyne_left_ranges_resnet50_gem_whiten_ep50_contrastive_m0.5_adam_lr1.0e-06_wd1.0e-06_3negs_qsz10_psz200_bsz5_img1024_th5.0m_Que123/plots* $HOME/WS_Farid/OxfordRobotCar/results/RC
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/retrieval_train-resnet50-gem_th* /home/xenial/WS_Farid/OxfordRobotCar/results/RC
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:WS_Farid/OxfordRobotCar/VPR_IR/Tietotalo_log/floor1_double_check_r01g06_7339157.out /home/xenial/WS_Farid/OxfordRobotCar/VPR_IR/Tietotalo_log
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x*/*.tar.gz /home/farid/datasets/compressed_concatenated_SPMs
+
 	$ scp alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x58/concat_x58.tar.gz dataset
 
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/GANs/misc/*.png /home/farid/datasets/GANs
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/GANs/misc*/*.png /home/farid/datasets/GANs_results
 
 ########################## CONDA ##########################
 7. package handling:
@@ -73,7 +86,7 @@
 	# update all packages in a virtual env 
 	$ conda update --all
 
-	$ source ~/WS_Farid/essentials/gpu_intrc.sh
+	$ source $HOME/WS_Farid/essentials/gpu_intrc.sh
 	
 	$ conda config --add channels conda-forge # prioritize conda-forge
 	$ conda config --remove channels conda-forge
@@ -81,7 +94,7 @@
 	$ conda config --show 			# show all config
 	$ conda config --show-sources
 
-	$ cat ~/.condarc #  1) conda-forge , 2) defaults
+	$ cat $HOME/.condarc #  1) conda-forge , 2) defaults
 	# or...
 	$ conda config --show channels
 
@@ -111,6 +124,7 @@ $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 ########################## SLURM ##########################
 #how to see which job I am running:
 	$ watch squeue -u alijani # monitor every 2 sec
+	$ squeue --me
 #run interactive cpu/gpu: to debug and run something...
 	$ source interactive_cpu.sh
 # OR... 
@@ -208,6 +222,9 @@ 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 # check for expiration
 # Github token, generated Jan 17 2024
 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 
 
+# Github token, generated Jan 19 2024:
+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
+
 # store username & password for a session (cache it)
 $ git config --global credential.helper cache
 
@@ -238,7 +255,7 @@ $ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15
 
 # puhti
 $ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder /scratch/project_2004072/OxfordRadarRobotCar --sensors="Grasshopper 2 Left,Velodyne HDL-32E Left,Bumblebee XB3 Visual Odometry,NovAtel GPS / INS"
-$ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder ~/Datasets/Oxford_Radar_RobotCar --sensors="Grasshopper 2 Left,Velodyne HDL-32E Left,Bumblebee XB3 Visual Odometry,NovAtel GPS / INS"
+$ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder $HOME/Datasets/Oxford_Radar_RobotCar --sensors="Grasshopper 2 Left,Velodyne HDL-32E Left,Bumblebee XB3 Visual Odometry,NovAtel GPS / INS"
 
 ############################## Pytorch CUDA info ##############################
 >>> import torch
@@ -296,4 +313,8 @@ $ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_
 
 ####################################################### OpenShift Container Platform ########################################################
 $ oc login https://rahti.csc.fi:8443 --token=qdnVmvVcxQzGYIS0cGYg4O2ZfNVIdFoQJ4WV4lyNOYg
-$ o
+$ oc get pods | grep "Running"
+
+# check DeploymentConfig: 
+# image: docker-registry.default.svc:5000/nlf/recsys@sha256:3e22e58a80e635b90d77845a5ccc14c8ed5ff616360f2d2a48ff12fb86545a19
+$ oc describe DeploymentConfig recsys
