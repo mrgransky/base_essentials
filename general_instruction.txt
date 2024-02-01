@@ -65,7 +65,7 @@ $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 
 	$ scp alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x58/concat_x58.tar.gz dataset
 
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/GANs/misc*/*.png /home/farid/datasets/GANs_results
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/GANs/misc_sngan*/{metrics,fake_IMGs,real_IMGs} /home/farid/datasets/GANs_results/misc_sngan
 
 ########################## CONDA ##########################
 7. package handling:
