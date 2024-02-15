@@ -2,11 +2,15 @@
 $ ssh -vi $HOME/.ssh/nlf_key ubuntu@128.214.254.157
 $ ssh ubuntu@128.214.254.157 # should work with no need to keys
 $ nslookup 128.214.254.157
+$ lsof -i :8000
 
-# to access your django app from VM
+# to access your Django app from VM
 $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 
-1. Connect to narvi/puhti account from Local machine:
+$ python manage.py collectstatic # optional:
+$ python manage.py runserver 0.0.0.0:8000
+
+1. Connect to SLURM account from Local machine:
 	$ ssh -vi $HOME/.ssh/narvi_key alijani@narvi.tut.fi # my new precision DELL laptop
 	$ ssh -vi $HOME/narvi_key/xenial-narvi-key alijani@narvi.tut.fi
 	$ ssh alijanif@puhti.csc.fi
@@ -45,6 +49,20 @@ $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs
 	$ rsync -avzh --stats --progress $HOME/datasets/sentinel2-l1c* ubuntu@128.214.254.157:datasets
 	
+	# SERVER => SERVER is NOT possible:
+	# The source and destination cannot both be remote.
+	# rsync error: syntax or usage error (code 1) at main.c(1428) [Receiver=3.2.7]
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs/
+
+	# do the following instead:
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*{58..60}.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
+
+	# local laptop:
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
+
+	# Pouta:
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz /media/volume/datasets/compressed_concatenated_SPMs/ -vv
+
 6. copy from server -> local:
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/Nationalbiblioteket/dataframes/*.json /home/xenial/Datasets/Nationalbiblioteket
 	$ 
@@ -66,6 +84,9 @@ $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 	$ scp alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x58/concat_x58.tar.gz dataset
 
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/GANs/misc_sngan*/{metrics,fake_IMGs,real_IMGs} /home/farid/datasets/GANs_results/misc_sngan
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/GANs/misc_* --include="metrics" --include="fake_IMGs" --include="real_IMGs" --exclude="*" ~/datasets/GANs_results/ -vv
+
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_xx60/concatinated_60_SPMs_shrinked_*.json $PWD
 
 ########################## CONDA ##########################
 7. package handling:
@@ -108,7 +129,8 @@ $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 
 	$ python -c "import caffe; caffe.set_mode_gpu(); caffe.set_device(0)"
 	
-	$ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available())"
+	$ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.current_device())"
+
 	$ python -c "import cv2; print(cv2.__version__)"
 	
 	source /projappl/project_2004072/miniconda3/etc/profile.d/conda.sh
@@ -275,9 +297,15 @@ True
 >>> torch.cuda.get_device_name(0)
 'GeForce GTX 950M'
 
+# in python script:
+import torch
+torch.cuda.init()
+print(torch.randn(1, device='cuda'))
+
 ##################################################################################################
 # nohup:
 $ nohup python -u RecSys_usr_token.py --inputDF /scratch/project_2004072/Nationalbiblioteket/dataframes/nikeY.docworks.lib.helsinki.fi_access_log.07_02_2021.log.dump --qphrase 'åbo akademi' --lmMethod 'stanza' > nikeY_stanza.out &
+$ nohup python -u manage.py --inputDF /scratch/project_2004072/Nationalbiblioteket/dataframes/nikeY.docworks.lib.helsinki.fi_access_log.07_02_2021.log.dump --qphrase 'åbo akademi' --lmMethod 'stanza' > nikeY_stanza.out &
 
 # kill nohup in terminal:
 $ jobs -l # get pid of the running jobs
@@ -312,9 +340,18 @@ $ oc get pods | grep Running
 $ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs recsys-44-tzf5s:/opt/app-root/src/datasets
 
 ####################################################### OpenShift Container Platform ########################################################
-$ oc login https://rahti.csc.fi:8443 --token=qdnVmvVcxQzGYIS0cGYg4O2ZfNVIdFoQJ4WV4lyNOYg
-$ oc get pods | grep "Running"
+$ oc login https://rahti.csc.fi:8443 --token=changes_all_the_time_check
+$ oc get projects
 
 # check DeploymentConfig: 
 # image: docker-registry.default.svc:5000/nlf/recsys@sha256:3e22e58a80e635b90d77845a5ccc14c8ed5ff616360f2d2a48ff12fb86545a19
 $ oc describe DeploymentConfig recsys
+
+# get pods name:
+$ oc get pods | grep "Running" # get the running pods name
+
+# copy to rahti: [Pods name must be replaced by above commands retult]
+$ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs recsys-108-j4clx:/opt/app-root/src/datasets
+
+$ oc describe quota
+$ oc describe limitranges
