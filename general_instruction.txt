@@ -48,7 +48,9 @@ $ python manage.py runserver 0.0.0.0:8000
 	
 	# Pouta
 	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs
-	$ rsync -avzh --stats --progress $HOME/datasets/sentinel2-l1c* ubuntu@128.214.254.157:datasets
+	$ rsync -avzh --stats --progress $HOME/datasets/sentinel2-l1c* ubuntu@128.214.254.157:/media/volume/datasets
+	
+	$ rsync -avzh --stats --progress $HOME/datasets/Nationalbiblioteket ubuntu@128.214.254.157:/media/volume/datasets
 	
 	# SERVER => SERVER is NOT possible:
 	# The source and destination cannot both be remote.
@@ -69,7 +71,7 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ 
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/retrievalSfM120k-vgg16-gem_th{5.0,10.0,15.0,20.0}* $HOME/WS_Farid/OxfordRobotCar/results/RC
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/results $HOME/Datasets/Nationalbiblioteket
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nikeX.docworks.lib.helsinki.fi_access_log.07_02_2021.log.dump $HOME/datasets/Nationalbiblioteket
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nikeY.docworks.lib.helsinki.fi_access_log.07_02_2021.log.dump $HOME/datasets/Nationalbiblioteket/datasets
 
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/OxfordRobotCar/my_imgs /home/xenial/WS_Farid/OxfordRobotCar/results/RC
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/trash_log/retrievalSfM120k-vgg16-gem_th25.0m_AllQs /home/xenial/WS_Farid/OxfordRobotCar/results/RC
