@@ -65,6 +65,7 @@ $ python manage.py runserver 0.0.0.0:8000
 
 	# Pouta:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x73.tar.gz /media/volume/datasets/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
 
 6. copy from server -> local:
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/Nationalbiblioteket/dataframes/*.json /home/xenial/Datasets/Nationalbiblioteket
