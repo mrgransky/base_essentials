@@ -355,7 +355,7 @@ $ oc describe DeploymentConfig recsys
 $ oc get pods | grep "Running" # get the running pods name
 
 # copy to rahti: [Pods name must be replaced by above commands retult]
-$ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs recsys-108-j4clx:/opt/app-root/src/datasets
+$ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs recsys-112-xs92w:/opt/app-root/src/datasets
 
 $ oc describe quota
 $ oc describe limitranges
