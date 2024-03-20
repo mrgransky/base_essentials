@@ -45,11 +45,13 @@ $ python manage.py runserver 0.0.0.0:8000
 	# Puhti:
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Oxford_RobotCar/rtk/2015-11-12-11-22-05/rtk.csv alijanif@puhti.csc.fi:/scratch/project_2004072/OxfordRobotCar/2015-11-12-11-22-05/gps/
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Nationalbiblioteket/*.zip alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket
+
+	# Pouta => Puhti: (Execute in Pouta terminal)
+	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike*pre* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
 	
 	# Pouta
 	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs
-	$ rsync -avzh --stats --progress $HOME/datasets/sentinel2-l1c* ubuntu@128.214.254.157:/media/volume/datasets
-	
+	$ rsync -avzh --stats --progress $HOME/datasets/sentinel2-l1c* ubuntu@128.214.254.157:/media/volume/datasets	
 	$ rsync -avzh --stats --progress $HOME/datasets/Nationalbiblioteket ubuntu@128.214.254.157:/media/volume/datasets
 	
 	# SERVER => SERVER is NOT possible:
@@ -63,15 +65,16 @@ $ python manage.py runserver 0.0.0.0:8000
 	# local laptop:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 
-	# Pouta:
+6. copy from server -> local:
+	# To Pouta:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x73.tar.gz /media/volume/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
 
-6. copy from server -> local:
-	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/Nationalbiblioteket/dataframes/*.json /home/xenial/Datasets/Nationalbiblioteket
-	$ 
+	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/Nationalbiblioteket/dataframes/*.json $HOME/datasets/Nationalbiblioteket/trash -vv
+
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/retrievalSfM120k-vgg16-gem_th{5.0,10.0,15.0,20.0}* $HOME/WS_Farid/OxfordRobotCar/results/RC
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/results $HOME/Datasets/Nationalbiblioteket
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/preprocessed_dataframes_XX/nike*xlsx $HOME/datasets/Nationalbiblioteket/trash/docs -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nikeY.docworks.lib.helsinki.fi_access_log.07_02_2021.log.dump $HOME/datasets/Nationalbiblioteket/datasets
 
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/vision/OxfordRobotCar/my_imgs /home/xenial/WS_Farid/OxfordRobotCar/results/RC
