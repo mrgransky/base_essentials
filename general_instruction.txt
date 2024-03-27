@@ -57,17 +57,17 @@ $ python manage.py runserver 0.0.0.0:8000
 	# SERVER => SERVER is NOT possible:
 	# The source and destination cannot both be remote.
 	# rsync error: syntax or usage error (code 1) at main.c(1428) [Receiver=3.2.7]
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs/
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*114*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs -vv
 
 	# do the following instead:
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*{58..60}.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 
 	# local laptop:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 
 6. copy from server -> local:
-	# To Pouta:
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x73.tar.gz /media/volume/datasets/compressed_concatenated_SPMs/ -vv
+	# To Pouta (must be done in Pouta):
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x114.tar.gz /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
 
@@ -211,7 +211,17 @@ $ scontrol show <ENTITY>
 # "licenses", "node", "partition", "reservation", "slurmd", 
 # "step", or "topology"
 
+# GPU watch
 $ watch nvidia-smi --format=csv --query-gpu=memory.total,utilization.gpu,memory.used,memory.free
+$ nvidia-smi dmon -d 3 -s pcvumt
+$ nvidia-smi --loop=1
+# installation required:
+$ pip install --upgrade nvitop gpustat
+$ sudo apt install nvtop
+$ nvitop -m # requires conda activate py39
+$ gpustat -cp --watch
+$ nvtop
+
 
 $ find Nordland/results/GoogleNet/*.csv -mtime -3 -print
 $ find Nordland/results/VGG16/*.csv -mtime -3 -exec rm {} +
@@ -319,14 +329,22 @@ $ jobs -l # get pid of the running jobs
 
 $ kill PID_NUMBER
 
+# Ubuntu:
+
 # remove file remove list files from nikeQ_30_xxx.txt to nikeQ_59_xxx.txt
 $ rm -rfv /scratch/project_2004072/Nationalbiblioteket/trash/NLF_logs/nikeQ_{30..60}_*.out
+
+# To remove all files in a directory before a certain date (older than N days), using find command in combination with rm.
+# check with ls first:
+$ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f ! -newermt '2024-03-22 08:35:00' -exec ls -lt {} \; 
+
+# remove:
+$ find /media/volume/Nationalbiblioteket/trash/nk_q_7* -type f ! -newermt '2024-03-25 12:17:00' -exec rm -rfv {} \; # for same day delete
+$ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f -mtime +N -exec rm {} \;
 
 # symbolic link: use ln together with special pattern matching characters
 # links all the files with the extension ".xdh" in sub-directory project to current directory
 $ ln -s project/*.xdh $PWD
-
-# Ubuntu:
 
 # To check whether a package is installed or not:
 $ dpkg -l | less # walk through all installed packages
@@ -358,7 +376,7 @@ $ oc describe DeploymentConfig recsys
 $ oc get pods | grep "Running" # get the running pods name
 
 # copy to rahti: [Pods name must be replaced by above commands retult]
-$ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs recsys-112-xs92w:/opt/app-root/src/datasets
+$ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs recsys-118-9crzv:/opt/app-root/src/datasets
 
 $ oc describe quota
 $ oc describe limitranges
