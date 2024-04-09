@@ -15,6 +15,7 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ ssh -vi $HOME/.ssh/narvi_key alijani@narvi.tut.fi # my new precision DELL laptop
 	$ ssh -vi $HOME/narvi_key/xenial-narvi-key alijani@narvi.tut.fi
 	$ ssh alijanif@puhti.csc.fi
+	$ ssh alijanif@lumi.csc.fi
 
 2. mount working_folders from narvi computer to local: (type in local machine)
 	$ sshfs -o IdentityFile=/home/xenial/narvi_key/xenial-narvi-key alijani@narvi.tut.fi:example_folder /home/xenial/narvi_ws/
@@ -67,7 +68,7 @@ $ python manage.py runserver 0.0.0.0:8000
 
 6. copy from server -> local:
 	# To Pouta (must be done in Pouta):
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x114.tar.gz /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x91.tar.gz /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
 
@@ -339,7 +340,7 @@ $ rm -rfv /scratch/project_2004072/Nationalbiblioteket/trash/NLF_logs/nikeQ_{30.
 $ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f ! -newermt '2024-03-22 08:35:00' -exec ls -lt {} \; 
 
 # remove:
-$ find /media/volume/Nationalbiblioteket/trash/nk_q_7* -type f ! -newermt '2024-03-25 12:17:00' -exec rm -rfv {} \; # for same day delete
+$ find /media/volume/Nationalbiblioteket/trash/nk_q_7* -type f ! -newermt '2024-03-25 00:00:00' -exec rm -rfv {} \; # for same day delete
 $ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f -mtime +N -exec rm {} \;
 
 # symbolic link: use ln together with special pattern matching characters
@@ -376,7 +377,7 @@ $ oc describe DeploymentConfig recsys
 $ oc get pods | grep "Running" # get the running pods name
 
 # copy to rahti: [Pods name must be replaced by above commands retult]
-$ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs recsys-118-9crzv:/opt/app-root/src/datasets
+$ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs recsys-124-pphf6:/opt/app-root/src/datasets
 
 $ oc describe quota
 $ oc describe limitranges
