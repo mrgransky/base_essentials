@@ -7,8 +7,7 @@ $ lsof -i :8000
 # to access your Django app from VM
 $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 
-$ rm -rfv staticfiles
-$ python manage.py collectstatic # optional:
+$ rm -rfv staticfiles; python manage.py collectstatic;
 $ python manage.py runserver 0.0.0.0:8000
 
 1. Connect to SLURM account from Local machine:
@@ -16,6 +15,9 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ ssh -vi $HOME/narvi_key/xenial-narvi-key alijani@narvi.tut.fi
 	$ ssh alijanif@puhti.csc.fi
 	$ ssh alijanif@lumi.csc.fi
+
+	# info about OS:
+	$ cat /etc/os-release
 
 2. mount working_folders from narvi computer to local: (type in local machine)
 	$ sshfs -o IdentityFile=/home/xenial/narvi_key/xenial-narvi-key alijani@narvi.tut.fi:example_folder /home/xenial/narvi_ws/
@@ -48,7 +50,7 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Nationalbiblioteket/*.zip alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket
 
 	# Pouta => Puhti: (Execute in Pouta terminal)
-	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike*pre* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
+	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
 	
 	# Pouta
 	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs
@@ -60,16 +62,28 @@ $ python manage.py runserver 0.0.0.0:8000
 	# rsync error: syntax or usage error (code 1) at main.c(1428) [Receiver=3.2.7]
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*114*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs -vv
 
-	# do the following instead:
+	# do the following instead (for all):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 
 	# local laptop:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 
+	# to local laptop (from LUMI) (must be executed in local laptop):
+	$ rsync -avzh --stats --progress alijanif@lumi.csc.fi:WS_Farid/ProgrammingModels $HOME/MISC -vv
+
 6. copy from server -> local:
-	# To Pouta (must be done in Pouta):
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x91.tar.gz /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
+	# To Pouta (must be done in Pouta) for only one concat:
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732.tar.gz /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
+
+	# To local laptop (must be executed locally): (newly scraped NLF dataset [17.04.2024]):
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x2.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET/nike* $HOME/datasets/Nationalbiblioteket/NLF_DATASET/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/nike*xlsx $HOME/datasets/Nationalbiblioteket/trash/cleaned_search_query_prompts/ -vv
+
+	# To Pouta (must be executed in Pouta): (newly scraped NLF dataset [17.04.2024]):
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET /media/volume/Nationalbiblioteket -vv
+
+	# To Pouta (must be executed in Pouta): (old scraped NLF dataset [XX.XX.2023]): 
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
 
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/Nationalbiblioteket/dataframes/*.json $HOME/datasets/Nationalbiblioteket/trash -vv
@@ -88,8 +102,6 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/trash_log/retrieval_train-resnet50-gem_th* /home/xenial/WS_Farid/OxfordRobotCar/results/RC
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:WS_Farid/OxfordRobotCar/VPR_IR/Tietotalo_log/floor1_double_check_r01g06_7339157.out /home/xenial/WS_Farid/OxfordRobotCar/VPR_IR/Tietotalo_log
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x*/*.tar.gz /home/farid/datasets/compressed_concatenated_SPMs
-
-	$ scp alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x58/concat_x58.tar.gz dataset
 
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/GANs/misc_sngan*/{metrics,fake_IMGs,real_IMGs} /home/farid/datasets/GANs_results/misc_sngan
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/GANs/misc_* --include="metrics" --include="fake_IMGs" --include="real_IMGs" --exclude="*" ~/datasets/GANs_results/ -vv
@@ -332,15 +344,15 @@ $ kill PID_NUMBER
 
 # Ubuntu:
 
-# remove file remove list files from nikeQ_30_xxx.txt to nikeQ_59_xxx.txt
+# delete file delete list files from nikeQ_30_xxx.txt to nikeQ_59_xxx.txt
 $ rm -rfv /scratch/project_2004072/Nationalbiblioteket/trash/NLF_logs/nikeQ_{30..60}_*.out
 
-# To remove all files in a directory before a certain date (older than N days), using find command in combination with rm.
+# To delete all files in a directory before a certain date (older than N days), using find command in combination with rm.
 # check with ls first:
-$ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f ! -newermt '2024-03-22 08:35:00' -exec ls -lt {} \; 
+$ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f ! -newermt '2024-04-22 10:00:00' -exec ls -lt {} \; 
 
-# remove:
-$ find /media/volume/Nationalbiblioteket/trash/nk_q_7* -type f ! -newermt '2024-03-25 00:00:00' -exec rm -rfv {} \; # for same day delete
+# delete:
+$ find /media/volume/Nationalbiblioteket/trash/*nk_q_* -type f ! -newermt '2024-04-22 11:00:00' -exec rm -rfv {} \; # for same day delete
 $ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f -mtime +N -exec rm {} \;
 
 # symbolic link: use ln together with special pattern matching characters
