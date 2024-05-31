@@ -16,6 +16,9 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ ssh alijanif@puhti.csc.fi
 	$ ssh alijanif@lumi.csc.fi
 
+	# LUMI activate python
+	$ module load cray-python
+
 	# info about OS:
 	$ cat /etc/os-release
 
@@ -51,6 +54,7 @@ $ python manage.py runserver 0.0.0.0:8000
 
 	# Pouta => Puhti: (Execute in Pouta terminal)
 	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
+	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike6_docworks_lib_helsinki_fi_access_log_2021-11-*pre* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
 	
 	# Pouta
 	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs
@@ -76,9 +80,9 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732.tar.gz /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
 
 	# To local laptop (must be executed locally): (newly scraped NLF dataset [17.04.2024]):
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x58.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x2.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET/nike* $HOME/datasets/Nationalbiblioteket/NLF_DATASET/ -vv
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/nike*xlsx $HOME/datasets/Nationalbiblioteket/trash/cleaned_search_query_prompts/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/nike4*pre* $HOME/datasets/Nationalbiblioteket/trash/cleaned_search_query_prompts/ -vv
 
 	# To Pouta (must be executed in Pouta): (newly scraped NLF dataset [17.04.2024]):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET /media/volume/Nationalbiblioteket -vv
@@ -163,7 +167,11 @@ $ cd /projappl/project_2004072
 $ conda-containerize update CondaCSC --post-install packages.sh
 $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 
+############################ LUMI container wrapper ###########################
+# similar to Puhti conda container wrapper:
+# follow the doc: https://docs.lumi-supercomputer.eu/software/installing/container-wrapper/#lumi-container-wrapper
 ########################## SLURM ##########################
+
 #how to see which job I am running:
 	$ watch squeue -u alijani # monitor every 2 sec
 	$ squeue --me
