@@ -69,18 +69,19 @@ $ python manage.py runserver 0.0.0.0:8000
 	# do the following instead (for all):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 
-	# local laptop:
+	# local laptop [MUST be executed in local laptop terminal]:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/concat*.json $HOME/datasets/Nationalbiblioteket/dataframes_x732/ -vv
 
 	# to local laptop (from LUMI) (must be executed in local laptop):
 	$ rsync -avzh --stats --progress alijanif@lumi.csc.fi:WS_Farid/ProgrammingModels $HOME/MISC -vv
 
 6. copy from server -> local:
 	# To Pouta (must be done in Pouta) for only one concat:
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732.tar.gz /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732*.tar.gz /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
 
 	# To local laptop (must be executed locally): (newly scraped NLF dataset [17.04.2024]):
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x2.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x2*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET/nike* $HOME/datasets/Nationalbiblioteket/NLF_DATASET/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/nike4*pre* $HOME/datasets/Nationalbiblioteket/trash/cleaned_search_query_prompts/ -vv
 
