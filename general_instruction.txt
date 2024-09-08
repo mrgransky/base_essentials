@@ -7,7 +7,9 @@ $ lsof -i :8000
 # to access your Django app from VM
 $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 
-$ rm -rfv staticfiles; python manage.py collectstatic;
+$ rm -rfv ~/stanza_resources/ # once in while or after updating stanza
+$ rm -rf staticfiles; python manage.py collectstatic;
+$ python manage.py runserver
 $ python manage.py runserver 0.0.0.0:8000
 
 1. Connect to SLURM account from Local machine:
@@ -52,6 +54,9 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Oxford_RobotCar/rtk/2015-11-12-11-22-05/rtk.csv alijanif@puhti.csc.fi:/scratch/project_2004072/OxfordRobotCar/2015-11-12-11-22-05/gps/
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Nationalbiblioteket/*.zip alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket
 
+	# local laptop => Puhti: [must be executed in local laptop terminal]:
+	$ rsync -avzhm --stats --progress $HOME/datasets/Nationalbiblioteket/dataframes_x732/*.json alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732 -vv
+
 	# Pouta => Puhti: (Execute in Pouta terminal)
 	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
 	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike6_docworks_lib_helsinki_fi_access_log_2021-11-*pre* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
@@ -78,13 +83,14 @@ $ python manage.py runserver 0.0.0.0:8000
 
 6. copy from server -> local:
 	# To Pouta (must be done in Pouta) for only one concat:
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732*.tar.gz /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732* /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/concat* /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732_lm_stanza/ -vv
 
-	# To local laptop (must be executed locally): (newly scraped NLF dataset [17.04.2024]):
+	# To local laptop (must be executed locally):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x2*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x* $HOME/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET/nike* $HOME/datasets/Nationalbiblioteket/NLF_DATASET/ -vv
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/nike4*pre* $HOME/datasets/Nationalbiblioteket/trash/cleaned_search_query_prompts/ -vv
-
+	
 	# To Pouta (must be executed in Pouta): (newly scraped NLF dataset [17.04.2024]):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET /media/volume/Nationalbiblioteket -vv
 
@@ -238,7 +244,7 @@ $ watch nvidia-smi --format=csv --query-gpu=memory.total,utilization.gpu,memory.
 $ nvidia-smi dmon -d 3 -s pcvumt
 $ nvidia-smi --loop=1
 # installation required:
-$ pip install --upgrade nvitop gpustat
+$ pip install --upgrade nvitop gpustat stanza pip
 $ sudo apt install nvtop
 $ nvitop -m # requires conda activate py39
 $ gpustat -cp --watch
@@ -405,3 +411,9 @@ $ oc describe limitranges
 
 # Prompting:
 # check carefully for correctness, style and efficiency, and give constructive critisism for how to improve it.
+
+
+
+
+
+
