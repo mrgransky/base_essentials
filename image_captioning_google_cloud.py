@@ -33,6 +33,7 @@ WORD_EMBEDDING_DIM = 128
 
 # InceptionResNetV2 takes (299, 299, 3) image as inputs
 # and return features in (8, 8, 1536) shape
+print(f">> InceptionResNetV2 model using imageNet weights...")
 FEATURE_EXTRACTOR = tf.keras.applications.inception_resnet_v2.InceptionResNetV2(
 	include_top=False,
 	weights="imagenet",
