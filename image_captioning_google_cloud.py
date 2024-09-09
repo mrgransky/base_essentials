@@ -28,6 +28,7 @@ tf.get_logger().setLevel("ERROR")
 warnings.filterwarnings('ignore')
 print(tf.version.VERSION)
 # tf.config.run_functions_eagerly(True)
+tf.keras.mixed_precision.set_global_policy('mixed_float16')
 HOME: str = os.getenv('HOME')
 USER: str = os.getenv('USER') # echo $USER
 VOCAB_SIZE = 20000  # use fewer words to speed up convergence
