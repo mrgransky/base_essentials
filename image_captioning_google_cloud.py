@@ -319,6 +319,11 @@ for i in range(5):
 	image, caption = predict_caption(filename)
 	print(" ".join(caption[:-1]) + ".")
 
-img = tf.image.decode_jpeg(tf.io.read_file(filename), channels=IMG_CHANNELS)
-plt.imshow(img)
+img = tf.image.decode_jpeg(
+	tf.io.read_file(filename), 
+	channels=IMG_CHANNELS,
+)
+# plt.imshow(img)
+plt.savefig(f"captioned_{filename}.png")
 plt.axis("off")
+# plt.clf()
