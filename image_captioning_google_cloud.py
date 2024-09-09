@@ -28,7 +28,7 @@ tf.get_logger().setLevel("ERROR")
 warnings.filterwarnings('ignore')
 print(tf.version.VERSION)
 # tf.config.run_functions_eagerly(True)
-# tf.keras.mixed_precision.set_global_policy('mixed_float16')
+tf.keras.mixed_precision.set_global_policy('mixed_float16')
 HOME: str = os.getenv('HOME')
 USER: str = os.getenv('USER') # echo $USER
 VOCAB_SIZE = 20000  # use fewer words to speed up convergence
@@ -200,14 +200,28 @@ loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
 	reduction="none",
 )
 
-@tf.function
-def loss_function(real, pred):
-	loss_ = loss_object(real, pred)
+# @tf.function
+# def loss_function(real, pred):
+# 	loss_ = loss_object(real, pred)
+# 	mask = tf.math.logical_not(tf.math.equal(real, 0))
+# 	mask = tf.cast(mask, dtype=tf.int32)
+# 	sentence_len = tf.reduce_sum(mask)
+# 	loss_ = loss_[:sentence_len]
+# 	return tf.reduce_mean(loss_)
+
+def mask_and_calculate_length(real):
 	mask = tf.math.logical_not(tf.math.equal(real, 0))
 	mask = tf.cast(mask, dtype=tf.int32)
 	sentence_len = tf.reduce_sum(mask)
-	loss_ = loss_[:sentence_len]
-	return tf.reduce_mean(loss_)
+	return mask, sentence_len
+
+@tf.function
+def loss_function(real, pred):
+	loss_ = loss_object(real, pred)
+	return loss_
+
+# Calculate mask and sentence length before feeding to loss function
+mask, sentence_len = mask_and_calculate_length(real)
 
 image_caption_train_model.compile(
 	optimizer="adam",
