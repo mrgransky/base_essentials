@@ -66,6 +66,7 @@ trainds = trainds.map(
 	get_image_label, 
 	num_parallel_calls=tf.data.AUTOTUNE,
 ).shuffle(BUFFER_SIZE)
+
 trainds = trainds.prefetch(buffer_size=tf.data.AUTOTUNE)
 
 # f, ax = plt.subplots(1, 4, figsize=(20, 5))
@@ -130,7 +131,7 @@ index_to_word = StringLookup(
 	invert=True,
 )
 
-BATCH_SIZE = 8
+BATCH_SIZE = 12
 def create_ds_fn(data):
 	img_tensor = data["image_tensor"]
 	caption = tokenizer(data["caption"])
@@ -139,11 +140,12 @@ def create_ds_fn(data):
 	target = tf.concat((target[:-1], zeros), axis=-1)
 	return (img_tensor, caption), target
 
-batched_ds = (
-	trainds.map(create_ds_fn)
-	.batch(BATCH_SIZE, drop_remainder=True)
-	.prefetch(buffer_size=tf.data.AUTOTUNE)
-)
+print(f"Batched Dataset...")
+btch_st = time.time()
+# batched_ds = trainds.map(create_ds_fn).batch(BATCH_SIZE, drop_remainder=True).prefetch(buffer_size=tf.data.AUTOTUNE)
+batched_ds = trainds.map(create_ds_fn).batch(BATCH_SIZE, drop_remainder=False).prefetch(buffer_size=tf.data.AUTOTUNE)
+print(f"Elapsed_t: {time.time()-btch_st:.1f} sec")
+
 for (img, caption), label in batched_ds.take(2):
 	print(f"Image shape: {img.shape}")
 	print(f"Caption shape: {caption.shape}")
@@ -199,6 +201,7 @@ loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
 	from_logits=True,
 	reduction="none",
 )
+optm = tf.keras.optimizers.Adam()
 
 # @tf.function
 # def loss_function(real, pred):
@@ -224,7 +227,7 @@ def loss_function(real, pred):
 mask, sentence_len = mask_and_calculate_length(real)
 
 image_caption_train_model.compile(
-	optimizer="adam",
+	optimizer=optm,
 	loss=loss_function,
 )
 
