@@ -26,7 +26,7 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # or any {'0', '1', '2'}
 tf.get_logger().setLevel("ERROR")
 warnings.filterwarnings('ignore') # warnings.simplefilter("ignore")
 print(tf.version.VERSION)
-# tf.config.run_functions_eagerly(True)
+tf.config.run_functions_eagerly(True)
 tf.keras.mixed_precision.set_global_policy('mixed_float16')
 HOME: str = os.getenv('HOME')
 USER: str = os.getenv('USER') # echo $USER
