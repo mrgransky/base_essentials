@@ -21,6 +21,15 @@ $ python manage.py runserver 0.0.0.0:8000
 	# LUMI activate python
 	$ module load cray-python
 
+	# module list 	List currently loaded modules.
+	# module avail 	List available packages.
+	# module spider 	List available packages in a different format.
+	# module help [modulefile] 	Description of specified module.
+	# module show [modulefile] 	Displays information about specified module, including environment changes, dependencies, software version and path.
+	# module load [modulefile] 	Loads module or specifies which dependencies have not been loaded.
+	# module unload [modulefile] 	Unloads specified module from environment.
+	# module purge 	Unloads all loaded modules
+
 	# info about OS:
 	$ cat /etc/os-release
 
@@ -160,7 +169,7 @@ $ python manage.py runserver 0.0.0.0:8000
 
 	$ python -c "import caffe; caffe.set_mode_gpu(); caffe.set_device(0)"
 	
-	$ python -c "import torch; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.current_device())"
+	$ python -c "import torch; import tensorflow as tf; print(tf.__version__); print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.current_device())"
 
 	$ python -c "import cv2; print(cv2.__version__)"
 	
