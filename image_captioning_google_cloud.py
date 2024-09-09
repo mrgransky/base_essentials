@@ -43,26 +43,25 @@ IMG_WIDTH = 299
 IMG_CHANNELS = 3
 FEATURES_SHAPE = (8, 8, 1536)
 
-# Load the coco_captions dataset
-ds, info = tfds.load('coco_captions', split='train', with_info=True)
-print(type(ds),)
-print(type(info))
-print(info)
-print("#"*100)
-# Iterate over the dataset
-for example in ds.take(5):
-	image = example['image']
-	captions = example['captions']
-	print(f"Image ID: {example['image/id']}")
-	print(f"Captions:")
-	for caption in captions:
-		print(f"- {caption['text']}")
-	# Visualize the image (requires matplotlib)
-	import matplotlib.pyplot as plt
-	plt.imshow(image)
-	plt.show()
-
-sys.exit()
+# # Load the coco_captions dataset
+# ds, info = tfds.load('coco_captions', split='train', with_info=True)
+# print(type(ds),)
+# print(type(info))
+# print(info)
+# print("#"*100)
+# # Iterate over the dataset
+# for example in ds.take(5):
+# 	image = example['image']
+# 	captions = example['captions']
+# 	print(f"Image ID: {example['image/id']}")
+# 	print(f"Captions:")
+# 	for caption in captions:
+# 		print(f"- {caption['text']}")
+# 	# Visualize the image (requires matplotlib)
+# 	import matplotlib.pyplot as plt
+# 	plt.imshow(image)
+# 	plt.show()
+# sys.exit()
 
 GCS_DIR = "gs://asl-public/data/tensorflow_datasets/"
 BUFFER_SIZE = 1000
