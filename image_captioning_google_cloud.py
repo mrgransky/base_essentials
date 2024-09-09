@@ -72,7 +72,7 @@ trainds = tfds.load(
 	name="coco_captions",
 	split="train",
 	# data_dir=GCS_DIR,
-	data_dir="/scratch/project_2004072/IMG_Captioning_Dataset" if USER=="alijanif",
+	data_dir="/scratch/project_2004072/IMG_Captioning_Dataset" if USER=="alijanif" else f"{HOME}",
 	shuffle_files=True,
 )
 print(f"Elapsed_t: {time.time()-t0:.2f} sec")
