@@ -71,7 +71,8 @@ t0 = time.time()
 trainds = tfds.load(
 	name="coco_captions",
 	split="train",
-	data_dir=GCS_DIR,
+	# data_dir=GCS_DIR,
+	shuffle_files=True,
 )
 print(f"Elapsed_t: {time.time()-t0:.2f} sec")
 
