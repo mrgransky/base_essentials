@@ -1,3 +1,4 @@
+import sys
 import os
 import time
 from textwrap import wrap
@@ -23,24 +24,15 @@ from tensorflow.keras.layers import (
 )
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # or any {'0', '1', '2'}
 tf.get_logger().setLevel("ERROR")
-warnings.simplefilter("ignore")
-# warnings.filterwarnings('ignore')
-
+# warnings.simplefilter("ignore")
+warnings.filterwarnings('ignore')
 print(tf.version.VERSION)
-tf.config.run_functions_eagerly(True)
-gpus = tf.config.list_physical_devices('GPU')
-print(gpus)
+# tf.config.run_functions_eagerly(True)
+HOME: str = os.getenv('HOME')
 USER: str = os.getenv('USER') # echo $USER
-# if USER == "ubuntu":
-# 	os.environ["CUDA_VISIBLE_DEVICES"]="2"
-
-# Change these to control the accuracy/speed
 VOCAB_SIZE = 20000  # use fewer words to speed up convergence
 ATTENTION_DIM = 512  # size of dense layer in Attention
 WORD_EMBEDDING_DIM = 128
-
-# InceptionResNetV2 takes (299, 299, 3) image as inputs
-# and return features in (8, 8, 1536) shape
 print(f">> InceptionResNetV2 model using imageNet weights...")
 FEATURE_EXTRACTOR = tf.keras.applications.inception_resnet_v2.InceptionResNetV2(
 	include_top=False,
@@ -137,7 +129,7 @@ index_to_word = StringLookup(
 	invert=True,
 )
 
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 def create_ds_fn(data):
 	img_tensor = data["image_tensor"]
 	caption = tokenizer(data["caption"])
@@ -165,9 +157,8 @@ image_features = FEATURE_EXTRACTOR(image_input)
 x = Reshape((FEATURES_SHAPE[0] * FEATURES_SHAPE[1], FEATURES_SHAPE[2]))(image_features)
 encoder_output = Dense(ATTENTION_DIM, activation="relu")(x)
 encoder = tf.keras.Model(inputs=image_input, outputs=encoder_output)
-encoder.summary()
+print(encoder.summary())
 
-# word_input = Input(shape=(MAX_CAPTION_LEN), name="words")
 word_input = Input(
 	shape=(MAX_CAPTION_LEN,), 
 	name="words",
@@ -208,18 +199,6 @@ loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
 	reduction="none",
 )
 
-# def loss_function(real, pred):
-# 	loss_ = loss_object(real, pred)
-# 	# returns 1 to word index and 0 to padding (e.g. [1,1,1,1,1,0,0,0,0,...,0])
-# 	mask = tf.math.logical_not(tf.math.equal(real, 0))
-# 	mask = tf.cast(mask, dtype=tf.int32)
-# 	sentence_len = tf.reduce_sum(mask)#[0]
-# 	print(type(sentence_len), sentence_len)
-# 	loss_ = loss_[:sentence_len]
-# 	print(type(loss_), loss_.shape, loss_)
-# 	# return tf.reduce_mean(loss_, 1)
-# 	return tf.reduce_mean(loss_) # Remove the unnecessary argument 1 for tf.reduce_mean
-
 @tf.function
 def loss_function(real, pred):
 	# print(f"real {type(real)}: {real.shape} | pred: {type(pred)} {pred.shape}")
@@ -240,7 +219,10 @@ train_st_time = time.time()
 history = image_caption_train_model.fit(batched_ds, epochs=1)
 print(f"Elapsed_t: {time.time()-train_st_time:.2f} sec")
 
-gru_state_input = Input(shape=(ATTENTION_DIM), name="gru_state_input")
+gru_state_input = Input(
+	shape=(ATTENTION_DIM,),
+	name="gru_state_input",
+)
 gru_output, gru_state = decoder_gru(embed_x, initial_state=gru_state_input)
 context_vector = decoder_attention([gru_output, encoder_output])
 addition_output = Add()([gru_output, context_vector])
@@ -272,10 +254,20 @@ def predict_caption(filename):
 		dec_input = tf.expand_dims([predicted_id], 1)
 	return img, result
 
-HOME: str = os.getenv('HOME')
-filename = os.path.join(HOME, "Bilder", "baseball.jpeg")
-filename = os.path.join(HOME, "Bilder", "surf.jpeg")
+# filename = "surf.jpeg"
 
+# if USER == "ubuntu":
+# 	# load
+# 	filename = "baseball.jpeg"
+# 	# filename = "surf.jpeg"
+# elif USER == "farid":
+# 	filename = os.path.join(HOME, "Bilder", "baseball.jpeg")
+# 	# filename = os.path.join(HOME, "Bilder", "surf.jpeg")
+# else:
+# 	print(f"{USER} not identified!, Exiting...")
+# 	sys.exit(1)
+
+filename = "baseball.jpeg"
 for i in range(5):
 	image, caption = predict_caption(filename)
 	print(" ".join(caption[:-1]) + ".")
