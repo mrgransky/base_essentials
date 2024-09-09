@@ -25,6 +25,11 @@ from tensorflow.keras.layers import (
 )
 print(tf.version.VERSION)
 tf.config.run_functions_eagerly(True)
+gpus = tf.config.list_physical_devices('GPU')
+print(gpus)
+USER: str = os.getenv('USER') # echo $USER
+if USER == "ubuntu":
+	tf.config.experimental.set_memory_growth(gpus[2], True)
 
 # Change these to control the accuracy/speed
 VOCAB_SIZE = 20000  # use fewer words to speed up convergence
