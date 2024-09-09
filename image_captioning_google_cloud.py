@@ -28,8 +28,8 @@ tf.config.run_functions_eagerly(True)
 gpus = tf.config.list_physical_devices('GPU')
 print(gpus)
 USER: str = os.getenv('USER') # echo $USER
-if USER == "ubuntu":
-	os.environ["CUDA_VISIBLE_DEVICES"]="2"
+# if USER == "ubuntu":
+# 	os.environ["CUDA_VISIBLE_DEVICES"]="2"
 
 # Change these to control the accuracy/speed
 VOCAB_SIZE = 20000  # use fewer words to speed up convergence
