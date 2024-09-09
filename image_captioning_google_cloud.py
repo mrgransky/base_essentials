@@ -66,16 +66,24 @@ FEATURES_SHAPE = (8, 8, 1536)
 GCS_DIR = "gs://asl-public/data/tensorflow_datasets/"
 BUFFER_SIZE = 1000
 
-print(f">> Loading CoCo Caption")
+if USER == "alijanif":
+	customized_dataset_dir = "/scratch/project_2004072/IMG_Captioning_Dataset"
+elif USER == "ubuntu":
+	customized_dataset_dir = "/media/volume/IMG_Captioning_Dataset"
+else:
+	customized_dataset_dir = f"{os.path.join(HOME, 'tensorflow_datasets')}"
+
+print(f">> Loading CoCo Caption Dataset from/in {customized_dataset_dir}")
 t0 = time.time()
 trainds = tfds.load(
 	name="coco_captions",
 	split="train",
 	# data_dir=GCS_DIR,
-	data_dir="/scratch/project_2004072/IMG_Captioning_Dataset" if USER=="alijanif" else f"{HOME}",
+	data_dir=customized_dataset_dir,
 	shuffle_files=True,
 )
-print(f"Elapsed_t: {time.time()-t0:.2f} sec")
+print(f"TRAIN DS: {type(trainds)} Elapsed_t: {time.time()-t0:.2f} sec")
+print("#"*100)
 
 def get_image_label(example):
 	caption = example["captions"]["text"][0]  # only the first caption per image
@@ -153,7 +161,7 @@ index_to_word = StringLookup(
 	invert=True,
 )
 
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 def create_ds_fn(data):
 	img_tensor = data["image_tensor"]
 	caption = tokenizer(data["caption"])
@@ -288,6 +296,7 @@ def predict_caption(filename):
 			print(f"dec_input shape: {dec_input.shape}")
 			print(f"gru_state shape: {gru_state.shape}")
 			print(f"features shape: {features.shape}")
+			print(f"#"*60)
 			predictions, gru_state = decoder_pred_model([dec_input, gru_state, features])
 		except Exception as e:
 			print(f"Error in iteration {i}: {e}")
