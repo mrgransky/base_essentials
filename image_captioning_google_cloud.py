@@ -46,14 +46,7 @@ FEATURES_SHAPE = (8, 8, 1536)
 GCS_DIR = "gs://asl-public/data/tensorflow_datasets/"
 BUFFER_SIZE = 1000
 
-def get_image_label(example):
-	caption = example["captions"]["text"][0]  # only the first caption per image
-	img = example["image"]
-	img = tf.image.resize(img, (IMG_HEIGHT, IMG_WIDTH))
-	img = img / 255
-	return {"image_tensor": img, "caption": caption}
-
-print(f">> Loading CoCo Caption", end="\t")
+print(f">> Loading CoCo Caption")
 t0 = time.time()
 trainds = tfds.load(
 	name="coco_captions",
@@ -61,6 +54,13 @@ trainds = tfds.load(
 	data_dir=GCS_DIR,
 )
 print(f"Elapsed_t: {time.time()-t0:.2f} sec")
+
+def get_image_label(example):
+	caption = example["captions"]["text"][0]  # only the first caption per image
+	img = example["image"]
+	img = tf.image.resize(img, (IMG_HEIGHT, IMG_WIDTH))
+	img = img / 255
+	return {"image_tensor": img, "caption": caption}
 
 trainds = trainds.map(
 	get_image_label, 
@@ -131,7 +131,7 @@ index_to_word = StringLookup(
 	invert=True,
 )
 
-BATCH_SIZE = 12
+BATCH_SIZE = 32
 def create_ds_fn(data):
 	img_tensor = data["image_tensor"]
 	caption = tokenizer(data["caption"])
@@ -203,28 +203,28 @@ loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
 )
 optm = tf.keras.optimizers.Adam()
 
-# @tf.function
-# def loss_function(real, pred):
-# 	loss_ = loss_object(real, pred)
-# 	mask = tf.math.logical_not(tf.math.equal(real, 0))
-# 	mask = tf.cast(mask, dtype=tf.int32)
-# 	sentence_len = tf.reduce_sum(mask)
-# 	loss_ = loss_[:sentence_len]
-# 	return tf.reduce_mean(loss_)
-
-def mask_and_calculate_length(real):
-	mask = tf.math.logical_not(tf.math.equal(real, 0))
-	mask = tf.cast(mask, dtype=tf.int32)
-	sentence_len = tf.reduce_sum(mask)
-	return mask, sentence_len
-
 @tf.function
 def loss_function(real, pred):
 	loss_ = loss_object(real, pred)
-	return loss_
+	mask = tf.math.logical_not(tf.math.equal(real, 0))
+	mask = tf.cast(mask, dtype=tf.int32)
+	sentence_len = tf.reduce_sum(mask)
+	loss_ = loss_[:sentence_len]
+	return tf.reduce_mean(loss_)
 
-# Calculate mask and sentence length before feeding to loss function
-mask, sentence_len = mask_and_calculate_length(real)
+# def mask_and_calculate_length(real):
+# 	mask = tf.math.logical_not(tf.math.equal(real, 0))
+# 	mask = tf.cast(mask, dtype=tf.int32)
+# 	sentence_len = tf.reduce_sum(mask)
+# 	return mask, sentence_len
+
+# @tf.function
+# def loss_function(real, pred):
+# 	loss_ = loss_object(real, pred)
+# 	return loss_
+
+# # Calculate mask and sentence length before feeding to loss function
+# mask, sentence_len = mask_and_calculate_length(real)
 
 image_caption_train_model.compile(
 	optimizer=optm,
