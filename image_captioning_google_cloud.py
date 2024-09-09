@@ -134,7 +134,7 @@ index_to_word = StringLookup(
 	invert=True,
 )
 
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 def create_ds_fn(data):
 	img_tensor = data["image_tensor"]
 	caption = tokenizer(data["caption"])
