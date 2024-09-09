@@ -42,6 +42,28 @@ IMG_HEIGHT = 299
 IMG_WIDTH = 299
 IMG_CHANNELS = 3
 FEATURES_SHAPE = (8, 8, 1536)
+
+# Load the coco_captions dataset
+ds, info = tfds.load('coco_captions', split='train', with_info=True)
+print(type(ds),)
+print(type(info))
+print(info)
+print("#"*100)
+# Iterate over the dataset
+for example in ds.take(5):
+	image = example['image']
+	captions = example['captions']
+	print(f"Image ID: {example['image/id']}")
+	print(f"Captions:")
+	for caption in captions:
+		print(f"- {caption['text']}")
+	# Visualize the image (requires matplotlib)
+	import matplotlib.pyplot as plt
+	plt.imshow(image)
+	plt.show()
+
+sys.exit()
+
 GCS_DIR = "gs://asl-public/data/tensorflow_datasets/"
 BUFFER_SIZE = 1000
 
@@ -244,6 +266,7 @@ context_vector = decoder_attention([gru_output, encoder_output])
 addition_output = Add()([gru_output, context_vector])
 layer_norm_output = layer_norm(addition_output)
 decoder_output = decoder_output_dense(layer_norm_output)
+
 decoder_pred_model = tf.keras.Model(
 	inputs=[word_input, gru_state_input, encoder_output],
 	outputs=[decoder_output, gru_state],
@@ -260,7 +283,14 @@ def predict_caption(filename):
 	dec_input = tf.expand_dims([word_to_index("<start>")], 1)
 	result = []
 	for i in range(MAX_CAPTION_LEN):
-		predictions, gru_state = decoder_pred_model([dec_input, gru_state, features])
+		try:
+			print(f"dec_input shape: {dec_input.shape}")
+			print(f"gru_state shape: {gru_state.shape}")
+			print(f"features shape: {features.shape}")
+			predictions, gru_state = decoder_pred_model([dec_input, gru_state, features])
+		except Exception as e:
+			print(f"Error in iteration {i}: {e}")
+			break
 		top_probs, top_idxs = tf.math.top_k(input=predictions[0][0], k=10, sorted=False,)
 		chosen_id = tf.random.categorical([top_probs], 1)[0].numpy()
 		predicted_id = top_idxs.numpy()[chosen_id][0]
