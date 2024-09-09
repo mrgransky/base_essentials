@@ -28,7 +28,7 @@ tf.get_logger().setLevel("ERROR")
 warnings.filterwarnings('ignore')
 print(tf.version.VERSION)
 # tf.config.run_functions_eagerly(True)
-tf.keras.mixed_precision.set_global_policy('mixed_float16')
+# tf.keras.mixed_precision.set_global_policy('mixed_float16')
 HOME: str = os.getenv('HOME')
 USER: str = os.getenv('USER') # echo $USER
 VOCAB_SIZE = 20000  # use fewer words to speed up convergence
@@ -193,7 +193,7 @@ image_caption_train_model = tf.keras.Model(
 	inputs=[image_input, word_input],
 	outputs=decoder_output
 )
-image_caption_train_model.summary()
+print(image_caption_train_model.summary())
 
 loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
 	from_logits=True,
@@ -202,7 +202,6 @@ loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
 
 @tf.function
 def loss_function(real, pred):
-	# print(f"real {type(real)}: {real.shape} | pred: {type(pred)} {pred.shape}")
 	loss_ = loss_object(real, pred)
 	mask = tf.math.logical_not(tf.math.equal(real, 0))
 	mask = tf.cast(mask, dtype=tf.int32)
