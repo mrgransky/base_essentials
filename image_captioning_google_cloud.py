@@ -2,8 +2,6 @@ import os
 import time
 from textwrap import wrap
 import warnings
-warnings.filterwarnings('ignore')
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # or any {'0', '1', '2'}
 import matplotlib.pylab as plt
 import numpy as np
 import tensorflow as tf
@@ -23,6 +21,11 @@ from tensorflow.keras.layers import (
 	StringLookup,
 	TextVectorization,
 )
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # or any {'0', '1', '2'}
+tf.get_logger().setLevel("ERROR")
+warnings.simplefilter("ignore")
+# warnings.filterwarnings('ignore')
+
 print(tf.version.VERSION)
 tf.config.run_functions_eagerly(True)
 gpus = tf.config.list_physical_devices('GPU')
@@ -105,7 +108,7 @@ tokenizer = TextVectorization(
 	standardize=standardize,
 	output_sequence_length=MAX_CAPTION_LEN,
 )
-print(f">> Adapting tokenizer to the caption...", end="\t")
+print(f">> Adapting tokenizer to the caption [time consuming]...")
 t0 = time.time()
 tokenizer.adapt(trainds.map(lambda x: x["caption"]))
 tokenizer(["<start> This is a sentence <end>"])
@@ -134,7 +137,7 @@ index_to_word = StringLookup(
 	invert=True,
 )
 
-BATCH_SIZE = 32
+BATCH_SIZE = 16
 def create_ds_fn(data):
 	img_tensor = data["image_tensor"]
 	caption = tokenizer(data["caption"])
@@ -219,7 +222,7 @@ loss_object = tf.keras.losses.SparseCategoricalCrossentropy(
 
 @tf.function
 def loss_function(real, pred):
-	print(f"real {type(real)}: {real.shape} | pred: {type(pred)} {pred.shape}")
+	# print(f"real {type(real)}: {real.shape} | pred: {type(pred)} {pred.shape}")
 	loss_ = loss_object(real, pred)
 	mask = tf.math.logical_not(tf.math.equal(real, 0))
 	mask = tf.cast(mask, dtype=tf.int32)
