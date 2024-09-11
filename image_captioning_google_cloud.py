@@ -282,7 +282,6 @@ decoder_pred_model = tf.keras.Model(
 )
 
 MINIMUM_SENTENCE_LENGTH = 5
-
 def predict_caption(filename):
 	gru_state = tf.zeros((1, ATTENTION_DIM))
 	img = tf.image.decode_jpeg(tf.io.read_file(filename), channels=IMG_CHANNELS)
