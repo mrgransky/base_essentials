@@ -67,9 +67,9 @@ GCS_DIR = "gs://asl-public/data/tensorflow_datasets/"
 BUFFER_SIZE = 1000
 
 if USER == "alijanif":
-	customized_dataset_dir = "/scratch/project_2004072/IMG_Captioning_Dataset"
+	customized_dataset_dir = "/scratch/project_2004072/IMG_Captioning"
 elif USER == "ubuntu":
-	customized_dataset_dir = "/media/volume/IMG_Captioning_Dataset"
+	customized_dataset_dir = "/media/volume/IMG_Captioning"
 else:
 	customized_dataset_dir = f"{os.path.join(HOME, 'tensorflow_datasets')}"
 
@@ -161,7 +161,7 @@ index_to_word = StringLookup(
 	invert=True,
 )
 
-BATCH_SIZE = 16
+BATCH_SIZE = 8
 def create_ds_fn(data):
 	img_tensor = data["image_tensor"]
 	caption = tokenizer(data["caption"])
