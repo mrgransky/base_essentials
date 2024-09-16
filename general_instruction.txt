@@ -8,7 +8,7 @@ $ lsof -i :8000
 $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 
 $ rm -rfv ~/stanza_resources/ # once in while or after updating stanza
-$ rm -rf staticfiles; python manage.py collectstatic;
+$ rm -rf staticfiles; python manage.py collectstatic; clear; python manage.py runserver
 $ python manage.py runserver
 $ python manage.py runserver 0.0.0.0:8000
 
@@ -62,6 +62,7 @@ $ python manage.py runserver 0.0.0.0:8000
 	# Puhti:
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Oxford_RobotCar/rtk/2015-11-12-11-22-05/rtk.csv alijanif@puhti.csc.fi:/scratch/project_2004072/OxfordRobotCar/2015-11-12-11-22-05/gps/
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Nationalbiblioteket/*.zip alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket
+	$ rsync -azhm --stats --progress $HOME/datasets/MS_COCO alijanif@puhti.csc.fi:/scratch/project_2004072/IMG_Captioning &> /dev/null # no prininting in terminal
 
 	# local laptop => Puhti: [must be executed in local laptop terminal]:
 	$ rsync -avzhm --stats --progress $HOME/datasets/Nationalbiblioteket/dataframes_x732/*.json alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732 -vv
@@ -424,5 +425,88 @@ $ oc describe limitranges
 
 
 
+body {
+	display: flex;
+	flex-direction: column;
+	height: 100vh;
+	max-width: 1200px; /* Ensure max-width for consistency on all screens */
+	margin: 0 auto; /* centered layout */
+	padding: 0;
+	box-sizing: border-box;
+	/* background-color: rgb(255, 255, 255); for debuging!*/
+}
 
+.navbar {
+	display: flex;
+	align-items: center;
+	background-color: #2c2c2c;
+	justify-content: flex-start;
+	padding: 2px;
+	width: 100%;
+}
+
+.navbar a {
+	text-decoration: none;
+	color: white;
+	font-size: 1.15rem; /* Use rem to ensure text scales */
+	padding: 12px 25px;
+	margin-right: 5px;
+}
+
+.navbar a.instruction {
+	background-color: #5b37b1;
+	color: rgb(255, 255, 255);
+	font-style: oblique;
+	font-weight: bold;
+}
+
+.navbar a:hover {
+	background-color: #ddd;
+	color: black;
+}
+
+/* Responsive scaling based on screen size using media queries */
+@media screen and (max-width: 1200px) {
+	.body {
+		max-width: 100%;
+		padding: 0 15px; /* Add padding for smaller screens */
+	}
+}
+
+@media screen and (max-width: 768px) {
+	.navbar a {
+		font-size: 1.5rem;
+	}
+}
+
+
+document.addEventListener("DOMContentLoaded", function() {
+	const searchInputField = document.querySelector('.search-input-field');
+	const helpContainer = document.querySelector('.help-container');
+	const foldElement = document.querySelector('.fold');
+
+	searchInputField.addEventListener('focus', function() {
+			helpContainer.style.display = 'flex'; // Show the help container
+			foldElement.classList.remove('unfolder'); // Remove the unfold class to fold element
+			foldElement.classList.add('fold'); // Ensure the initial folded state
+	});
+
+	// Toggle fold/unfold when clicking on the help container
+	helpContainer.addEventListener('click', function(event) {
+			// Toggle the fold class
+			foldElement.classList.toggle('unfold');
+
+			// Prevent event propagation to parent elements
+			event.stopPropagation();
+	});
+
+	// Close the help container when clicking outside of it
+	document.addEventListener('click', function(event) {
+			if (!searchInputField.contains(event.target)) {
+					helpContainer.style.display = 'none'; // Hide the help container
+					foldElement.classList.remove('unfolder'); // Remove the unfold class
+					foldElement.classList.add('fold'); // Ensure the folded state
+			}
+	});
+});
 
