@@ -8,9 +8,17 @@ $ lsof -i :8000
 $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 
 $ rm -rfv ~/stanza_resources/ # once in while or after updating stanza
+# only for Local Laptop
 $ rm -rf staticfiles; python manage.py collectstatic; clear; python manage.py runserver
-$ python manage.py runserver
+
+# in Pouta:
+$ rm -rf staticfiles; python manage.py collectstatic; 
+
+# RecSys;
 $ python manage.py runserver 0.0.0.0:8000
+
+# ImACCESS:
+$ python manage.py runserver 0.0.0.0:9000
 
 1. Connect to SLURM account from Local machine:
 	$ ssh -vi $HOME/.ssh/narvi_key alijani@narvi.tut.fi # my new precision DELL laptop
@@ -40,6 +48,9 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ fusermount -u /home/xenial/narvi_ws
 
 4. jupyter notebook:
+	# convert ipynb to python script:
+	$ jupyter nbconvert mynotebook.ipynb --to python
+
 	#1) remote machine: i.e., Narvi, Puhti
 		$ jupyter notebook --no-browser --port=8787
 	
@@ -71,10 +82,15 @@ $ python manage.py runserver 0.0.0.0:8000
 	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
 	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike6_docworks_lib_helsinki_fi_access_log_2021-11-*pre* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
 	
-	# Pouta
+	# local laptop => Pouta
 	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs
 	$ rsync -avzh --stats --progress $HOME/datasets/sentinel2-l1c* ubuntu@128.214.254.157:/media/volume/datasets	
-	$ rsync -avzh --stats --progress $HOME/datasets/Nationalbiblioteket ubuntu@128.214.254.157:/media/volume/datasets
+	$ rsync -avzh --stats --progress $HOME/datasets/Nationalbiblioteket ubuntu@128.214.254.157:/media/volume/datasets	
+	
+	# openpose caffemodels:
+	$ rsync -avzh --stats --progress $HOME/WS_Farid/ImACCESS/openpose/models ubuntu@128.214.254.157:WS_Farid/ImACCESS/openpose
+	# captioning models:
+	$ rsync -avzh --stats --progress $HOME/datasets/trash/models ubuntu@128.214.254.157:/media/volume/ImACCESS
 	
 	# SERVER => SERVER is NOT possible:
 	# The source and destination cannot both be remote.
@@ -90,22 +106,23 @@ $ python manage.py runserver 0.0.0.0:8000
 
 	# to local laptop (from LUMI) (must be executed in local laptop):
 	$ rsync -avzh --stats --progress alijanif@lumi.csc.fi:WS_Farid/ProgrammingModels $HOME/MISC -vv
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:~/WS_Farid/ImACCESS/openpose/examples/tutorial_api_python/outputs $HOME/datasets/trash/
 
-6. copy from server -> local:
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:~/WS_Farid/ImACCESS/openpose/outputs $HOME/datasets/trash/
+
 	# To Pouta (must be done in Pouta) for only one concat:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732* /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/concat* /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732_lm_stanza/ -vv
 
+6. copy from server -> local:
 	# To local laptop (must be executed locally):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x2*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x* $HOME/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET/nike* $HOME/datasets/Nationalbiblioteket/NLF_DATASET/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/IMG_Captioning/trash/models/*.pkl $HOME/datasets/trash/models/ -vv
 	
 	# To Pouta (must be executed in Pouta): (newly scraped NLF dataset [17.04.2024]):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET /media/volume/Nationalbiblioteket -vv
-
-	# To Pouta (must be executed in Pouta): (old scraped NLF dataset [XX.XX.2023]): 
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/datasets/nike{5..6}*.dump /media/volume/Nationalbiblioteket/datasets -vv
 
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/narvi_key/xenial-narvi-key" alijani@narvi.tut.fi:/lustre/sgn-data/Nationalbiblioteket/dataframes/*.json $HOME/datasets/Nationalbiblioteket/trash -vv
 
@@ -211,6 +228,7 @@ $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 
 # sinfo valid type specs, https://slurm.schedmd.com/sinfo.html
 $ sinfo -o "%15P %3c %10m %11l %30G %14e %5D %25f"
+$ sudo apt update -y && sudo apt upgrade -y
 
 # This command will print the following information for each partition:
 # 	%15P: Partition name
@@ -256,7 +274,7 @@ $ nvidia-smi --loop=1
 # installation required:
 $ pip install --upgrade nvitop gpustat stanza pip
 $ sudo apt install nvtop
-$ nvitop -m # requires conda activate py39
+$ nvtop -m # requires conda activate py39
 $ gpustat -cp --watch
 $ nvtop
 
@@ -275,6 +293,7 @@ cttl + PgUp/ PgDn: switch between terminals/tabs
 ##################################################
 # Counting Files in the Current Directory
 $ ls -l /path_to_dir | wc -l
+$ ls -U | grep -c '\.jpg$'
 
 # avoid __pycache__ # DON NOT DELETE THIS LINE!!!!
 sys.dont_write_bytecode = True 
@@ -421,92 +440,3 @@ $ oc describe limitranges
 
 # Prompting:
 # check carefully for correctness, style and efficiency, and give constructive critisism for how to improve it.
-
-
-
-
-body {
-	display: flex;
-	flex-direction: column;
-	height: 100vh;
-	max-width: 1200px; /* Ensure max-width for consistency on all screens */
-	margin: 0 auto; /* centered layout */
-	padding: 0;
-	box-sizing: border-box;
-	/* background-color: rgb(255, 255, 255); for debuging!*/
-}
-
-.navbar {
-	display: flex;
-	align-items: center;
-	background-color: #2c2c2c;
-	justify-content: flex-start;
-	padding: 2px;
-	width: 100%;
-}
-
-.navbar a {
-	text-decoration: none;
-	color: white;
-	font-size: 1.15rem; /* Use rem to ensure text scales */
-	padding: 12px 25px;
-	margin-right: 5px;
-}
-
-.navbar a.instruction {
-	background-color: #5b37b1;
-	color: rgb(255, 255, 255);
-	font-style: oblique;
-	font-weight: bold;
-}
-
-.navbar a:hover {
-	background-color: #ddd;
-	color: black;
-}
-
-/* Responsive scaling based on screen size using media queries */
-@media screen and (max-width: 1200px) {
-	.body {
-		max-width: 100%;
-		padding: 0 15px; /* Add padding for smaller screens */
-	}
-}
-
-@media screen and (max-width: 768px) {
-	.navbar a {
-		font-size: 1.5rem;
-	}
-}
-
-
-document.addEventListener("DOMContentLoaded", function() {
-	const searchInputField = document.querySelector('.search-input-field');
-	const helpContainer = document.querySelector('.help-container');
-	const foldElement = document.querySelector('.fold');
-
-	searchInputField.addEventListener('focus', function() {
-			helpContainer.style.display = 'flex'; // Show the help container
-			foldElement.classList.remove('unfolder'); // Remove the unfold class to fold element
-			foldElement.classList.add('fold'); // Ensure the initial folded state
-	});
-
-	// Toggle fold/unfold when clicking on the help container
-	helpContainer.addEventListener('click', function(event) {
-			// Toggle the fold class
-			foldElement.classList.toggle('unfold');
-
-			// Prevent event propagation to parent elements
-			event.stopPropagation();
-	});
-
-	// Close the help container when clicking outside of it
-	document.addEventListener('click', function(event) {
-			if (!searchInputField.contains(event.target)) {
-					helpContainer.style.display = 'none'; // Hide the help container
-					foldElement.classList.remove('unfolder'); // Remove the unfold class
-					foldElement.classList.add('fold'); // Ensure the folded state
-			}
-	});
-});
-
