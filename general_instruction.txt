@@ -92,6 +92,8 @@ $ python manage.py runserver 0.0.0.0:9000
 	# captioning models:
 	$ rsync -avzh --stats --progress $HOME/datasets/trash/models ubuntu@128.214.254.157:/media/volume/ImACCESS
 	
+	$ rsync -avzh --stats --progress $HOME/WS_Farid/ImACCESS/txt2img/myntradataset ubuntu@128.214.254.157:/media/volume/ImACCESS &> /dev/null # no prininting in terminal
+	
 	# SERVER => SERVER is NOT possible:
 	# The source and destination cannot both be remote.
 	# rsync error: syntax or usage error (code 1) at main.c(1428) [Receiver=3.2.7]
@@ -108,19 +110,26 @@ $ python manage.py runserver 0.0.0.0:9000
 	$ rsync -avzh --stats --progress alijanif@lumi.csc.fi:WS_Farid/ProgrammingModels $HOME/MISC -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:~/WS_Farid/ImACCESS/openpose/examples/tutorial_api_python/outputs $HOME/datasets/trash/
 
-	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:~/WS_Farid/ImACCESS/openpose/outputs $HOME/datasets/trash/
-
 	# To Pouta (must be done in Pouta) for only one concat:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732* /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/concat* /media/volume/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x732_lm_stanza/ -vv
 
 6. copy from server -> local:
+
 	# To local laptop (must be executed locally):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x2*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x* $HOME/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET/nike* $HOME/datasets/Nationalbiblioteket/NLF_DATASET/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/IMG_Captioning/trash/models/*.pkl $HOME/datasets/trash/models/ -vv
-	
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/NA_DATASET/NATIONAL_ARCHIVE_1913-01-01_1946-12-31/*.csv $HOME/WS_Farid/ImACCESS/txt2img/historical_datasets/national_archive/temp
+
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:~/WS_Farid/ImACCESS/openpose/outputs $HOME/datasets/trash/
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/NATIONAL_ARCHIVE_1914-07-28_1945-09-02/img_rgb_* $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1933-01-01_1933-01-02
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/*/outputs/*.png $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1933-01-01_1933-01-02/outputs
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/*/outputs/*.png $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31/outputs
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/myntradataset/outputs $HOME/WS_Farid/ImACCESS/txt2img/myntradataset
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/NATIONAL_ARCHIVE_1935-01-01_1950-12-31/models $HOME/WS_Farid/ImACCESS/txt2img/datasets
+
 	# To Pouta (must be executed in Pouta): (newly scraped NLF dataset [17.04.2024]):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET /media/volume/Nationalbiblioteket -vv
 
@@ -184,8 +193,11 @@ $ python manage.py runserver 0.0.0.0:9000
 	
 	# all installed packages in my conda env
 	$ conda list --show-channel-urls 
+	$ pip list
+	$ pip show numpy # check versions and info
 
 	$ python -c "import caffe; caffe.set_mode_gpu(); caffe.set_device(0)"
+	$ python -c "import torch; import torchvision; print(torch.__version__); print(torchvision.__version__); print(torch.cuda.is_available()); print(torch.cuda.current_device())"
 	
 	$ python -c "import torch; import tensorflow as tf; print(tf.__version__); print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.current_device())"
 
@@ -438,5 +450,111 @@ $ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_
 $ oc describe quota
 $ oc describe limitranges
 
-# Prompting:
-# check carefully for correctness, style and efficiency, and give constructive critisism for how to improve it.
+replacement_dict = {
+	"airbase": "air base",
+	"military airbase": "air base",
+	"military airfield": "air base",
+	"military airport": "air base",
+	"air station": "air base",
+	"naval air station": "air base",
+	"naval air base": "air base",
+	"air force station": "air base",
+	"air force base": "air base",
+	"regatta": "sailboat",
+	"normandy invasion": "allied invasion",
+	"plane": "aircraft",
+	"airplane": "aircraft",
+	"aeroplane": "aircraft",
+	"graveyard": "cemetery",
+	"soldier": "infantry",
+	"clash": "wreck",
+	"sport": "leisure",
+	"military truck": "army truck",
+	"military base": "army base",
+	"military vehicle": "army vehicle",
+	"military hospital": "army hospital",
+	"flame thrower": "flamethrower",
+	"roadbuilding": "road construction",
+	"recruitment": "army recruiting",
+	"farm": "pasture",
+	"minesweeper": "naval vessel",
+}
+
+# replacement_dict = {
+# 	"plane": "military aviation",
+# 	"airplane": "military aviation",
+# 	"aeroplane": "military aviation",
+# 	"aircraft": "military aviation",
+# 	"helicopter": "military aviation",
+# 	"air force": "military aviation",
+# 	"naval warship": "navy",
+# 	"submarine": "navy",
+# 	"manufacturing plant": "infrastructure",
+# 	"barn": "infrastructure",
+# 	"construction": "infrastructure",
+# 	"road": "infrastructure",
+# 	"army base": "infrastructure",
+# 	"border": "infrastructure",
+# 	"refugee": "migration",
+# 	"evacuation": "migration",
+# 	"exodus": "migration",
+# 	"exile": "migration",
+# 	"aerial warfare": "strategy",
+# 	"air raid": "strategy",
+# 	"trench warfare": "strategy",
+# 	"battle of the bulge": "strategy",
+# 	"battle of the marne": "strategy",
+# 	"winter war": "strategy",
+# 	"blitzkrieg": "strategy",
+# 	"versailles": "international relations & treaties",
+# 	"treaty of versailles": "international relations & treaties",
+# 	"nuremberg trials": "international relations & treaties",
+# 	"game": "leisure",
+# 	"anniversary": "leisure",
+# 	"rail": "infrastructure",
+# 	"sport": "leisure",
+# 	"meeting": "diplomacy",
+# 	"negotiation": "diplomacy",
+# 	"conference": "diplomacy",
+# 	"summit": "diplomacy",
+# 	"attack": "conflict",
+# 	"clash": "conflict",
+# 	"war": "conflict",
+# 	"military strike": "conflict",
+# 	"battle": "conflict",
+# 	"propaganda": "propaganda & communication",
+# 	"public relation": "propaganda & communication",
+# 	"information warfare": "propaganda & communication",
+# 	"air bomb": "weapon",
+# 	"rifle": "weapon",
+# 	"barrel": "weapon",
+# 	"machine gun": "weapon",
+# 	"artillery": "weapon",
+# 	"tank": "weapon",
+# 	"grenade": "weapon",
+# 	"gun": "weapon",
+# 	"cannon": "weapon",
+# 	"rocket": "weapon",
+# 	"mortar": "weapon",
+# 	"firearm": "weapon",
+# 	"flamethrower": "weapon",
+# 	"bayonet": "weapon",
+# 	"tent": "camp",
+# 	"recruiting": "recruitment",
+# 	"captain": "military leader",
+# 	"army leader": "military leader",
+# 	"commander": "military leader",
+# 	"sergeant": "military leader",
+# 	"admiral": "military leader",
+# 	"explosion": "destruction",
+# 	"accident": "destruction",
+# 	"damage": "destruction",
+# 	"wreck": "destruction",
+# 	"truck":"vehicular",
+# 	"vehicle":"vehicular",
+# 	"ambulance":"vehicular",
+# 	"airport": "infrastructure",
+# 	"dam": "infrastructure",
+# 	"reservoir": "infrastructure",
+# 	"defence": "strategy",
+# }
