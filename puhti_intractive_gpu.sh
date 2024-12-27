@@ -5,7 +5,7 @@
 # OR ...
 # $ source puhti_intractive_gpu.sh
 
-# never change!!!!! JUST TO TEST
+# never change!!!!! for debugging:
 srun -J intrctv_gpuTEST --account=project_2009043 --partition=gputest --gres=gpu:v100:1 --time=0-00:15:00 --mem=64G --ntasks=1 --cpus-per-task=2 --pty /bin/bash -i
 
 # changing is allowed:
