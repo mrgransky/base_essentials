@@ -289,8 +289,6 @@ $ sudo apt install nvtop
 $ nvtop -m # requires conda activate py39
 $ gpustat -cp --watch
 $ nvtop
-
-
 $ find Nordland/results/GoogleNet/*.csv -mtime -3 -print
 $ find Nordland/results/VGG16/*.csv -mtime -3 -exec rm {} +
 ########################## SLURM ##########################
