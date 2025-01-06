@@ -360,11 +360,9 @@ $ git pull origin farid -v
 # How to download Oxford Radar RobotCar Dataset with Command line:
 $ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder /lustre/sgn-data/vision/OxfordRadarRobotCar --sensors="Grasshopper 2 Right,Velodyne HDL-32E Left Pointcloud,Velodyne HDL-32E Right,Bumblebee XB3 Visual Odometry,Navtech CTS350-X Radar"
 $ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder /lustre/sgn-data/vision/OxfordRadarRobotCar --sensors="Velodyne HDL-32E Left Pointcloud,Velodyne HDL-32E Right Pointcloud"
-
 # puhti
 $ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder /scratch/project_2004072/OxfordRadarRobotCar --sensors="Grasshopper 2 Left,Velodyne HDL-32E Left,Bumblebee XB3 Visual Odometry,NovAtel GPS / INS"
 $ python download.py --datasets="2019-01-14-14-15-12-radar-oxford-10k,2019-01-15-14-24-38-radar-oxford-10k,2019-01-18-14-14-42-radar-oxford-10k" --download_folder $HOME/Datasets/Oxford_Radar_RobotCar --sensors="Grasshopper 2 Left,Velodyne HDL-32E Left,Bumblebee XB3 Visual Odometry,NovAtel GPS / INS"
-
 ############################## Pytorch CUDA info ##############################
 >>> import torch
 
