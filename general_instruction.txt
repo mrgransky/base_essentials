@@ -10,8 +10,11 @@ $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 $ rm -rfv ~/stanza_resources/ # once in while or after updating stanza
 # only for Local Laptop
 $ rm -rf staticfiles; python manage.py collectstatic; clear; python manage.py runserver
+$ rm -rf staticfiles && python manage.py collectstatic --noinput && python manage.py clearsessions && clear && python manage.py runserver
 
-# in Pouta:
+########################################################################################
+
+######## in Pouta:
 $ rm -rf staticfiles; python manage.py collectstatic; 
 
 # RecSys;
@@ -121,12 +124,13 @@ $ python manage.py runserver 0.0.0.0:9000
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET/nike* $HOME/datasets/Nationalbiblioteket/NLF_DATASET/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/IMG_Captioning/trash/models/*.pkl $HOME/datasets/trash/models/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/NA_DATASET/NATIONAL_ARCHIVE_1913-01-01_1946-12-31/*.csv $HOME/WS_Farid/ImACCESS/txt2img/historical_datasets/national_archive/temp
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORICAL_ARCHIVES/*.png $HOME/datasets/trash/results/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORICAL_ARCHIVES/results/*.png $HOME/datasets/trash/results/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:~/WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/HISTORICAL_ARCHIVES/results/*.png $HOME/datasets/trash/results/ -vv
 
-	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:WS_Farid/ImACCESS/*/*.png $HOME/datasets/trash/results/ -vv
-	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:~/WS_Farid/ImACCESS/openpose/outputs $HOME/datasets/trash/
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/NATIONAL_ARCHIVE_1914-07-28_1945-09-02/img_rgb_* $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31
-	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/*/outputs/*.png $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31/outputs
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/*/*/*.png $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31/outputs
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/results $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31/outputs
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/*/outputs/*.png $HOME/WS_Farid/ImACCESS/datasets/WW_DATASETs/NATIONAL_ARCHIVE_1914-01-01_1946-12-31/outputs
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/myntradataset/outputs $HOME/WS_Farid/ImACCESS/txt2img/myntradataset
@@ -207,11 +211,13 @@ $ python manage.py runserver 0.0.0.0:9000
 	
 	source /projappl/project_2004072/miniconda3/etc/profile.d/conda.sh
 
+$ farid@farid-Precision-3581:~/WS_Farid/DARIAH-FI$ cp -v meaningless_lemmas.txt ~/WS_Farid/RecSys_NLF/recsys_app/recsys_src/meaningless_lemmas.txt
 ############################ Puhti Conda ###########################
 $ module purge
 $ module load tykky
 $ cd /projappl/project_2004072
 # modify packages.sh file as needed! <<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>
+
 $ conda-containerize update CondaCSC --post-install packages.sh
 $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 
@@ -287,6 +293,7 @@ $ nvidia-smi dmon -d 3 -s pcvumt
 $ nvidia-smi --loop=1
 # installation required:
 $ pip install --upgrade nvitop gpustat stanza pip
+$ pip install numpy pandas matplotlib scikit-learn scipy tensorflow thinc pyarrow spacy autofaiss embedding-reader tf-keras cupy numba nvitop gpustat pip --verbose --upgrade
 $ sudo apt install nvtop
 $ nvtop -m # requires conda activate py39
 $ gpustat -cp --watch
@@ -320,6 +327,42 @@ export PYTHONDONTWRITEBYTECODE=1
 # go back in git commit (2 steps back):
 $ git reset HEAD~2
 # chnage some files and continue new commits
+
+The error you're encountering indicates that your local main branch is behind the remote main branch. This means that there have been changes pushed to the remote repository that your local branch does not yet include. To resolve this, you need to integrate the remote changes into your local branch before pushing your changes.
+
+Here are the steps to resolve this issue:
+
+		Fetch the latest changes from the remote repository:
+
+git fetch origin
+
+Merge the remote changes into your local branch:
+
+git merge origin/main
+
+Resolve any merge conflicts (if there are any). After resolving conflicts, you need to commit the changes:
+
+git add .
+git commit -m "Resolved merge conflicts"
+
+Push your changes to the remote repository:
+
+		git push origin main
+
+Alternatively, you can use git pull to fetch and merge the changes in one step:
+
+		Pull the latest changes from the remote repository:
+
+git pull origin main
+
+Resolve any merge conflicts (if there are any). After resolving conflicts, you need to commit the changes:
+
+git add .
+git commit -m "Resolved merge conflicts"
+
+Push your changes to the remote repository:
+
+git push origin main
 
 # Github username:
 mrgransky
@@ -447,94 +490,3 @@ $ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_
 
 $ oc describe quota
 $ oc describe limitranges
-
-prec_at_k = []
-recall_at_k = []
-for i, label_features in enumerate(tokenized_labels_features):
-	sim = (100.0 * label_features @ all_image_features.T).softmax(dim=-1) # similarities between query and all images
-	topk_probs, topk_indices = sim.topk(K, dim=-1)
-	topk_pred_labels_idxs = [dataset_labels_int[topk_indices.squeeze().item()]] if K==1 else [dataset_labels_int[idx] for idx in topk_indices.squeeze().cpu().numpy()] # K@1, 5, ...
-	relevant_retrieved_images_for_label_i = topk_pred_labels_idxs.count(i)# count number of relevant images (i.e., images with the same label) in top-K retrieved images.
-	prec_at_k.append(relevant_retrieved_images_for_label_i/K)
-	all_images_with_label_i = [idx for idx, (img, lbl) in enumerate(zip(dataset_images_id, dataset_labels_int)) if lbl == i]
-	num_all_images_with_label_i = len(all_images_with_label_i)
-	recall_at_k.append(relevant_retrieved_images_for_label_i/num_all_images_with_label_i)
-avg_prec_at_k = sum(prec_at_k)/len(labels)
-avg_recall_at_k = sum(recall_at_k) / len(labels)
-print(f"Precision@{K}: {avg_prec_at_k:.3f} {np.mean(prec_at_k)}")
-print(f"Recall@{K}: {avg_recall_at_k} {np.mean(recall_at_k)}")
-print(f"Elapsed_t: {time.time()-t0:.3f} sec".center(160, "-"))
-
->> Fine-tuning a pre-trained model using conventional backpropagation:
-# logits_per_image: similarity scores between each image embedding and all text embeddings in the batch
-# Each row in logits_per_image corresponds to one image in the batch, and each column corresponds to a text description.
-
-# logits_per_text: similarity scores between each text embedding and all image embeddings in the batch
-
-# # Conventional backpropagation:
-# logits_per_image, logits_per_text = model(images, labels) # torch.Size([batch_size, batch_size]) torch.Size([batch_size, batch_size])
-# ground_truth = torch.arange(start=0, end=len(images), dtype=torch.long, device=device)
-# loss_img = criterion(logits_per_image, ground_truth) 
-# loss_txt = criterion(logits_per_text, ground_truth)
-# total_loss = 0.5 * (loss_img + loss_txt)
-# total_loss.backward()
-# torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-# optimizer.step() # Update weights
-
-# def evaluate(model, test_loader, criterion, device:str="cuda"):
-# 	model.eval()
-# 	total_loss = 0
-# 	total_correct_text_description_for_each_image = 0
-# 	total_correct_image_for_each_text_description = 0
-# 	with torch.no_grad():
-# 		for batch_idx, (images, labels) in enumerate(test_loader):
-# 			images, labels = images.to(device), labels.to(device)
-# 			logits_per_image, logits_per_text = model(images, labels) # torch.Size([batch_size, batch_size]) torch.Size([batch_size, batch_size])
-# 			_, predicted_idxs_imgs = torch.max(input=logits_per_image, dim=1, keepdim=True)
-# 			_, predicted_idxs_txts = torch.max(input=logits_per_text, dim=1, keepdim=True)
-# 			correct_text_description_idxs = torch.argmax(labels, dim=1) # indices of correct text descriptions for each image
-# 			# Compare predicted indexes with the correct indexes
-# 			total_correct_text_description_for_each_image += (predicted_idxs_imgs == correct_text_description_idxs.unsqueeze(1)).sum().item()
-# 			total_correct_image_for_each_text_description += (predicted_idxs_txts == correct_text_description_idxs.unsqueeze(1)).sum().item()
-
-# 			# validation loss
-# 			ground_truth = torch.arange(start=0, end=len(images), dtype=torch.long, device=device)
-# 			loss_img = criterion(logits_per_image, ground_truth) 
-# 			loss_txt = criterion(logits_per_text, ground_truth)
-# 			valid_loss = 0.5 * (loss_img + loss_txt)
-# 			total_loss += valid_loss.item()
-# 	avg_loss = total_loss / len(test_loader)
-# 	accuracy_text_description_for_each_image = total_correct_text_description_for_each_image / len(test_loader.dataset)
-# 	accuracy_text_image_for_each_text_description = total_correct_image_for_each_text_description / len(test_loader.dataset)
-# 	return avg_loss, accuracy_text_description_for_each_image, accuracy_text_image_for_each_text_description
-
-
-more advanced:
-def evaluate(model, test_loader, criterion, device="cuda"):
-	model.eval()
-	total_loss = 0
-	correct_text_description = 0
-	correct_image_for_text = 0
-	total_samples = 0
-	with torch.no_grad():
-		for bidx, (images, labels) in enumerate(test_loader):
-			images, labels = images.to(device), labels.to(device)
-			batch_size = images.size(0)
-			total_samples += batch_size
-			logits_per_image, logits_per_text = model(images, labels) # torch.Size([batch_size, batch_size]) torch.Size([batch_size, batch_size])
-			# Predictions
-			predicted_text_idxs = torch.argmax(input=logits_per_image, dim=1) # indices of maximum value of all elements in input tensor. torch.Size([batch_size])
-			predicted_image_idxs = torch.argmax(input=logits_per_text, dim=1)
-			correct_labels = torch.arange(start=0, end=batch_size, dtype=torch.long, device=device) # ground truth labels for each batch item torch.Size([batch_size])
-			# Metrics
-			correct_text_description += (predicted_text_idxs == correct_labels).sum().item()
-			correct_image_for_text += (predicted_image_idxs == correct_labels).sum().item()
-			# Validation loss
-			loss_img = criterion(logits_per_image, correct_labels)
-			loss_txt = criterion(logits_per_text, correct_labels)
-			total_loss += 0.5 * (loss_img.item() + loss_txt.item())
-	# Compute average loss and accuracies
-	avg_loss = total_loss / len(test_loader)
-	accuracy_text_description = correct_text_description / total_samples
-	accuracy_image_for_text = correct_image_for_text / total_samples
-	return avg_loss, accuracy_text_description, accuracy_image_for_text
