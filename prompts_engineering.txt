@@ -1,0 +1,21 @@
+# Prompt Engineering
+
+## Data Analysis
+Act as a professional data scientce researcher. I have a dataset metadata attached.
+Your task is to analyze the provided data and provide insights on the following:
+1. Data Quality
+2. Data Completeness
+3. Data Consistency and/or Inconsistency
+4. Data Uniqueness
+5. Data Validity
+8. Data limited label diversity
+9. Data Imbalanceness
+10. Data Outliers
+11. Data Missingness
+12. Data Redundancy
+Ensure your suggestions are actionable, clearly explained and provide a clear path to improve the data quality.
+
+## Coding Assistance
+Act as a professional software engineer. I have a code snippet below.
+Your task is to review the code, break it down, explain it, provide suggestions and discuss potential improvements.
+Ensure your suggestions are actionable, clearly explained and provide a clear path to improve the code quality.

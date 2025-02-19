@@ -76,7 +76,7 @@ $ python manage.py runserver 0.0.0.0:9000
 	# Puhti:
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Oxford_RobotCar/rtk/2015-11-12-11-22-05/rtk.csv alijanif@puhti.csc.fi:/scratch/project_2004072/OxfordRobotCar/2015-11-12-11-22-05/gps/
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Nationalbiblioteket/*.zip alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket
-	$ rsync -azhm --stats --progress $HOME/datasets/MS_COCO alijanif@puhti.csc.fi:/scratch/project_2004072/IMG_Captioning &> /dev/null # no prininting in terminal
+	$ rsync -azhm --stats --progress $HOME/datasets/MS_COCO alijanif@puhti.csc.fi:/scratch/project_2004072/IMG_Captioning & > /dev/null # no prininting in terminal
 
 	# local laptop => Puhti: [must be executed in local laptop terminal]:
 	$ rsync -avzhm --stats --progress $HOME/datasets/Nationalbiblioteket/dataframes_x732/*.json alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732 -vv
@@ -86,7 +86,7 @@ $ python manage.py runserver 0.0.0.0:9000
 	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike6_docworks_lib_helsinki_fi_access_log_2021-11-*pre* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
 	
 	# local laptop => Pouta
-	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:datasets/compressed_concatenated_SPMs
+	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:/media/volume/Nationalbiblioteket/compressed_concatenated_SPMs
 	$ rsync -avzh --stats --progress $HOME/datasets/sentinel2-l1c* ubuntu@128.214.254.157:/media/volume/datasets	
 	$ rsync -avzh --stats --progress $HOME/datasets/Nationalbiblioteket ubuntu@128.214.254.157:/media/volume/datasets	
 	
@@ -128,13 +128,16 @@ $ python manage.py runserver 0.0.0.0:9000
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:~/WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/HISTORICAL_ARCHIVES/results/*.png $HOME/datasets/trash/results/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/SMU_1900-01-01_1970-12-31/outputs/*.png $HOME/datasets/trash/results/ -vv
 
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/NATIONAL_ARCHIVE_1914-07-28_1945-09-02/img_rgb_* $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/*/*/*.png $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31/outputs
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/results $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31/outputs
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/*/outputs/*.png $HOME/WS_Farid/ImACCESS/datasets/WW_DATASETs/NATIONAL_ARCHIVE_1914-01-01_1946-12-31/outputs
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/myntradataset/outputs $HOME/WS_Farid/ImACCESS/txt2img/myntradataset
-	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/NATIONAL_ARCHIVE_1935-01-01_1950-12-31/models $HOME/WS_Farid/ImACCESS/txt2img/datasets
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/NATIONAL_ARCHIVE_1935-01-01_1950-12-31/models $HOME/WS_Farid/ImACCESS/txt2img/datasets
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/*.png $HOME/datasets/trash/results/h4
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/EUROPEANA_1900-01-01_1970-12-31/stratified_random/*.png $HOME/datasets/trash/results/eu
 
 	# To Pouta (must be executed in Pouta): (newly scraped NLF dataset [17.04.2024]):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET /media/volume/Nationalbiblioteket -vv
