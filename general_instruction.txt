@@ -128,6 +128,7 @@ $ python manage.py runserver 0.0.0.0:9000
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:~/WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:~/WS_Farid/ImACCESS/clip/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/Nationalbiblioteket/trash/*.out $HOME/datasets/trash/logs/ -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/HISTORICAL_ARCHIVES/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/SMU_1900-01-01_1970-12-31/outputs/*.png $HOME/datasets/trash/results/ -vv
 
