@@ -20,8 +20,18 @@ Act as a professional software engineer. I have a code snippet below.
 Your task is to review the code, break it down, explain it, provide suggestions and discuss potential improvements.
 Ensure your suggestions are actionable, clearly explained and provide a clear path to improve the code quality.
 
-## Function / Code Evaluation / Code Review
+## Code Evaluation / Review
 Act as a professional software engineer. for the provided code, your task is to:
 1) review the code, break it down, explain it, provide suggestions and discuss potential improvements.
 2) walk through a practical and concrete example to see how this works step by step.
 3) evaluate SAMPLE_XXX() function, identify possible critical issues in the function.
+
+## Code Cleaning / Optimization
+Act as a professional software engineer. I have a code snippet below.
+Your task is to review the code, are there any optimization you can apply to the code to make it more efficient and faster?
+Ensure your suggestions are actionable, clearly explained and provide a clear path to improve the code quality.
+
+## Code Debugging
+Act as a professional software engineer. I have a code snippet below.
+Your task is to review the code, identify possible critical issues in the function, and provide suggestions and discuss potential improvements.
+Ensure your suggestions are actionable, clearly explained and provide a clear path to improve the code quality.

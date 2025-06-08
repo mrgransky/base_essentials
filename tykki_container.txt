@@ -1,0 +1,91 @@
+Pipeline Steps:
+
+Phase 1: Disable Old Conda Setups in Your User Environment
+$ cd
+$ vim ~/.bashrc
+Comment out or delete the line:
+
+# export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
+
+Save and exit.
+
+Apply ~/.bashrc Changes and Verify:
+
+The most reliable way is to log out of Puhti and log back in.
+
+Alternatively, for the current session (less complete than a fresh login): source ~/.bashrc
+
+Verify:
+
+$ echo $PATH
+$ which conda
+$ which python
+
+Phase 2: Delete the Old CondaCSC Directory Content
+
+$ module purge
+$ module load tykky
+$ cd /projappl/project_2004072/
+$ ls -l CondaCSC
+
+$ mv -v CondaCSC CondaCSC_OLD_$(date +%Y%m%d)
+# # Then, after confirming the new one works, you can delete CondaCSC_OLD_*
+
+Recreate the Empty Directory for the New Installation:
+We need an empty directory for Tykky to install into.
+
+$ mkdir CondaCSC
+
+Phase 3: Create the New Tykky Environment (Named CondaCSC)
+
+This phase uses Tykky to build a fresh, clean environment.
+
+Prepare environment.yml and requirements.txt:
+
+Create environment.yml (e.g., in your home directory or /projappl/project_2004072/) with your desired Conda packages.
+$ vim environment.yml
+
+name: CondaCSC_env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.9
+
+Create requirements.txt (in the same location) for pip packages.
+
+$ conda-containerize new --prefix CondaCSC environment.yml
+
+Phase 4: Set Up PATH for the New CondaCSC Environment
+
+$ cd
+$ vim ~/.bashrc
+
+# At the end of ~/.bashrc
+export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
+
+Save and exit.
+Log out of Puhti and log back in (most reliable).
+
+Or source ~/.bashrc.
+
+Verify:
+
+$ echo $PATH
+
+$ which python
+$ which pip
+$ which conda # This might still be a shell function, but should now operate in context of Tykky wrappers
+
+which python and pip should now point to locations inside /projappl/project_2004072/CondaCSC/bin/.
+$ cd /projappl/project_2004072/
+$ rm -rfv CondaCSC_OLD_*
+
+Test the New Environment:
+$ which python
+$ python --version
+
+continue with package installation:
+$ module purge
+$ module load tykky
+# modify packages.sh file: <<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>
+$ conda-containerize update CondaCSC --post-install packages.sh
