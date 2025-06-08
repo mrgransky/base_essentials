@@ -44,7 +44,9 @@ if __name__ == "__main__":
 				import speedtest
 
 		# Run speed test
-		results = check_internet_speed(server_id=13712)
+		speed_results = check_internet_speed(server_id=13712)
 		if speed_results:
-				print(f"\nRaw Results (Mbps)")
-				print(json.dumps(speed_results, indent=2, ensure_ascii=False))
+			print(f"\nRaw Results (Mbps)")
+			print(json.dumps(speed_results, indent=2, ensure_ascii=False))
+    else:
+			print("Failed to retrieve speed test results.")
