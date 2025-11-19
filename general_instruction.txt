@@ -2,6 +2,7 @@
 $ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -vi $HOME/.ssh/narvi_key alijani@narvi.tut.fi
 $ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ubuntu@128.214.254.157
 $ ssh alijanif@puhti.csc.fi
+$ ssh alijanif@mahti.csc.fi
 $ ssh ubuntu@128.214.254.157
 $ ssh alijanif@lumi.csc.fi
 
@@ -27,25 +28,22 @@ $ python manage.py runserver 0.0.0.0:8000
 # ImACCESS:
 $ python manage.py runserver 0.0.0.0:9000
 
-
-	# LUMI activate python
-	$ module load cray-python
-
-	# module list 	List currently loaded modules.
-	# module avail 	List available packages.
-	# module spider 	List available packages in a different format.
-	# module help [modulefile] 	Description of specified module.
-	# module show [modulefile] 	Displays information about specified module, including environment changes, dependencies, software version and path.
-	# module load [modulefile] 	Loads module or specifies which dependencies have not been loaded.
-	# module unload [modulefile] 	Unloads specified module from environment.
-	# module purge 	Unloads all loaded modules
-
-	# info about OS:
-	$ cat /etc/os-release
+# LUMI activate python
+$ module load cray-python
+# module list 	List currently loaded modules.
+# module avail 	List available packages.
+# module spider 	List available packages in a different format.
+# module help [modulefile] 	Description of specified module.
+# module show [modulefile] 	Displays information about specified module, including environment changes, dependencies, software version and path.
+# module load [modulefile] 	Loads module or specifies which dependencies have not been loaded.
+# module unload [modulefile] 	Unloads specified module from environment.
+# module purge 	Unloads all loaded modules
+# info about OS:
+$ cat /etc/os-release
 
 # run interactive [Puhti]:
-$ srun -J interactive_gpu_test --account=project_2009043 --partition=gputest --gres=gpu:v100:1 --time=0-00:15:00 --mem=4G --cpus-per-task=4 --pty /bin/bash -i
-$ srun -J interactive_cpu_test --account=project_2009043 --partition=test --time=00-00:15:00 --mem=64G --ntasks=1 --cpus-per-task=4 --pty /bin/bash -i
+$ srun -J interactive_gpu_test --account=project_2014707 --partition=gputest --gres=gpu:v100:1 --time=0-00:15:00 --mem=64G --cpus-per-task=4 --pty /bin/bash -i
+$ srun -J interactive_cpu_test --account=project_2009043 --partition=interactive --time=00-03:15:00 --mem=169G --ntasks=1 --cpus-per-task=20 --pty /bin/bash -i
 
 
 # run interactive gpu [Mahti]:
@@ -136,19 +134,29 @@ $ srun -J gpu_interactive  --partition=gpu --gres=gpu:teslap100:1 --time=00-01:0
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET/nike* $HOME/datasets/Nationalbiblioteket/NLF_DATASET/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/IMG_Captioning/trash/models/*.pkl $HOME/datasets/trash/models/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/NA_DATASET/NATIONAL_ARCHIVE_1913-01-01_1946-12-31/*.csv $HOME/WS_Farid/ImACCESS/txt2img/historical_datasets/national_archive/temp
+
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/NATIONAL_ARCHIVE_1900-01-01_1970-12-31/*.csv $HOME/datasets/trash/results/na -vv
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/*.xlsx $HOME/datasets/trash/results/h4 -vv
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4 -vv
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/SMU_1900-01-01_1970-12-31/*.xlsx $HOME/datasets/trash/results/smu -vv
+	
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORICAL_ARCHIVES/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:~/WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:~/WS_Farid/ImACCESS/clip/*.png $HOME/datasets/trash/results/ -vv
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/H*/*/*.png $HOME/datasets/trash/results/ -vv
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/*.out $HOME/datasets/trash/logs/ -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/H*/outputs/*.png $HOME/datasets/trash/results/ -vv
+
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/H*/single_label/*.png $HOME/datasets/trash/results/h4/ -vv
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/H*/single_label/*.png $HOME/datasets/trash/results/h4/ -vv
+
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/h4_*.out $HOME/datasets/trash/logs/ -vv
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/h4_*.out $HOME/datasets/trash/logs/ -vv
 
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/.ssh/narvi_key" alijani@narvi.tut.fi:/lustre/sgn-data/ImACCESS/WW_DATASETs/H*/results/*.png $HOME/datasets/trash/results/ -vv
 
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/trash/S*.txt $HOME/datasets/trash/logs/ -vv
-	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/*/results_multi_label/*.png $HOME/datasets/trash/results/ -vv
-	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/N*/*.png $HOME/datasets/trash/results/ -vv
-
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/S*/single_label/*.png $HOME/datasets/trash/results/smu -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/H*/single_label/inference/H* $HOME/datasets/trash/results/h4/inference -vv
 
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/NATIONAL_ARCHIVE_1914-07-28_1945-09-02/img_rgb_* $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/*/*/*.png $HOME/WS_Farid/ImACCESS/txt2img/datasets/national_archive/NATIONAL_ARCHIVE_1914-01-01_1946-12-31/outputs
@@ -156,10 +164,15 @@ $ srun -J gpu_interactive  --partition=gpu --gres=gpu:teslap100:1 --time=00-01:0
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/trash/smu_ft_progressive.out $HOME/datasets/trash/logs/ -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/W*/*multimodal.* $HOME/datasets/WW_DATASETs/trash -vv
 
-	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/W*/outputs $HOME/datasets/trash/results/ -vv
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/EUROPEANA_1900-01-01_1970-12-31/*.csv $HOME/datasets/trash/results/eu -vv
+
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/NATIONAL_ARCHIVE_1935-01-01_1950-12-31/models $HOME/WS_Farid/ImACCESS/txt2img/datasets
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/*.png $HOME/datasets/trash/results
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/EUROPEANA_1900-01-01_1970-12-31/outputs/*.png $HOME/datasets/trash/results/eu
+	# PUHTI:
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/SMU_1900-01-01_1970-12-31/*llm* $HOME/datasets/trash/results/smu/ -vv
+	# MAHTI:
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/SMU_1900-01-01_1970-12-31/*llm* $HOME/datasets/trash/results/smu/ -vv
 
 	# To Pouta (must be executed in Pouta): (newly scraped NLF dataset [17.04.2024]):
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET /media/volume/Nationalbiblioteket -vv
@@ -199,14 +212,18 @@ $ srun -J gpu_interactive  --partition=gpu --gres=gpu:teslap100:1 --time=00-01:0
 	$ conda remove -n myenv scipy
 	$ conda clean --all # remove all unused packages
 	$ conda activate py39
-	$ pip install numpy pandas transformers torch torchvision torchaudio hf-xet sentence-transformers dill scipy matplotlib seaborn joblib scikit-learn nltk tqdm pillow langdetect fasttext
+	$ pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+	$ pip install numpy pandas transformers hf-xet sentence-transformers dill scipy matplotlib seaborn joblib scikit-learn nltk tqdm pillow langdetect fasttext
 
 	$ pip install csvkit
 	$ head /scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multimodal.csv | csvcut -c img_url,multimodal_labels
 	$ csvcut -c img_url,multimodal_labels /scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multimodal.csv | less
 
+	# Create a new csv file:
+	$ head -n 170 metadata_multi_label.csv > test_medium.csv # first N rows
+	$ (head -n 1 metadata_multi_label.csv && tail -n 19 metadata_multi_label.csv) > test.csv # first row + last N rows
 	
-
 	# update all packages in a virtual env 
 	$ conda update --all
 
@@ -233,11 +250,8 @@ $ srun -J gpu_interactive  --partition=gpu --gres=gpu:teslap100:1 --time=00-01:0
 	$ pip show numpy # check versions and info
 
 	$ python -c "import caffe; caffe.set_mode_gpu(); caffe.set_device(0)"
-	$ python -c "import torch; import torchvision; print(torch.__version__); print(torchvision.__version__); print(torch.cuda.is_available()); print(torch.cuda.current_device())"
 	
-	$ python -c "import torch; import tensorflow as tf; print(tf.__version__); print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.current_device())"
-
-	$ python -c "import cv2; print(cv2.__version__)"
+	$ python -c "import torch; import transformers; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.current_device()); print(torch.cuda.get_device_name(torch.cuda.current_device()));print(transformers.__version__)"
 	
 	source /projappl/project_2004072/miniconda3/etc/profile.d/conda.sh
 
@@ -257,8 +271,9 @@ $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 ########################## SLURM ##########################
 
 #how to see which job I am running:
-	$ watch squeue -u alijani # monitor every 2 sec
-	$ squeue --me
+$ watch squeue -u alijani # monitor every 2 sec
+$ squeue --me
+$ squeue --me -o "%.15i %.12P %.10t %.15D %.15R %.15Q %.25S"
 #run interactive cpu/gpu: to debug and run something...
 	$ source interactive_cpu.sh
 # OR... 
@@ -266,7 +281,7 @@ $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 
 #run batch mode cpu/gpu:
 	$ sbatch batch_cpu.sh
-	$ sbatch --test-only puhti_sbatch.sh # find out when your job is estimated to run
+	$ sbatch --test-only puhti_sbatch.sh # estimated execution time
 	# sbatch: Job 13902002 to start at 2022-10-27T11:41:31 using 10 processors on nodes r03c21 in partition longrun
 
 # OR... 
@@ -278,8 +293,9 @@ $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 
 # sinfo valid type specs, https://slurm.schedmd.com/sinfo.html
 
-$ sinfo -o "%15P %3c %10m %11l %30G %14e %5D %30f %30N"
-
+$ sinfo -o "%15P %3c %10m %21l %60G %24e %5D %30f %30N"
+$ squeue -p gpu -o "%.12i %.8u %.2t %.9P %.5D %.10R %.10Q %.25S" --sort=-Q
+$ sprio -j <job_id>
 $ sudo apt update -y && sudo apt upgrade -y
 
 # This command will print the following information for each partition:
@@ -309,7 +325,7 @@ $ sacct -u alijanif
 
 # look at a specific job in more detail, whether your job efficiently used the allocated resources.
 $ seff <Jobid>
-$ for i in {0..19}; do seff 29103971_$i | grep "Memory Utilized:"; done
+$ for i in {0..11}; do seff 28746372_$i | grep "Memory Utilized:"; done
 $ for i in {12..23}; do echo "Job $i:"; seff 29103971_$i | grep "Memory"; done
 # view more verbose information about your job, by using the job id and running the following command:
 #Note: This only works for jobs that are in currently in queue:
@@ -331,7 +347,7 @@ $ nvidia-smi --loop=1
 $ pip install numpy pandas autofaiss gensim pyarrow torch torchvision torchaudio transformers accelerate nvitop gpustat stanza -U 
 $ pip install numpy pandas matplotlib scikit-learn scipy tensorflow thinc pyarrow spacy autofaiss embedding-reader tf-keras cupy numba nvitop gpustat pip --verbose --upgrade
 $ sudo apt install nvtop
-$ nvtop -m # requires conda activate py39
+$ nvtop
 $ gpustat -cp --watch
 $ watch free -h # memory consumption
 $ nvtop
@@ -353,6 +369,7 @@ cttl + PgUp/ PgDn: switch between terminals/tabs
 ##################################################
 # Counting Files in the Current Directory
 $ ls -l /path_to_dir | wc -l
+$ df -h . # disk usage
 $ ls -U | grep -c '\.jpg$'
 $ du -sh DARIAH-FI/* | sort -rh
 
@@ -486,9 +503,17 @@ $ kill PID_NUMBER
 # delete file delete list files from nikeQ_30_xxx.txt to nikeQ_59_xxx.txt
 $ rm -rfv /scratch/project_2004072/Nationalbiblioteket/trash/NLF_logs/nikeQ_{30..60}_*.out
 
-# To delete all files in a directory before a certain date (older than N days), using find command in combination with rm.
+# delete all files in a directory before a certain date (older than N days), using find command in combination with rm.
 # check with ls first:
-$ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f ! -newermt '2024-04-22 10:00:00' -exec ls -lt {} \; 
+$ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f ! -newermt '2025-06-10 00:00:00' -exec ls -lt {} \; 
+
+# delete all files except one directory:
+# check:
+$ find HISTORY_X4 -mindepth 1 -maxdepth 1 ! -name single_label -exec ls -l {} +
+# or
+$ find HISTORY_X4 -mindepth 1 -maxdepth 1 ! -name single_label
+
+$ find HISTORY_X4 -mindepth 1 -maxdepth 1 ! -name single_label -exec rm -rfv {} +
 
 # delete:
 $ find /media/volume/Nationalbiblioteket/trash/*nk_q_* -type f ! -newermt '2024-04-22 11:00:00' -exec rm -rfv {} \; # for same day delete
@@ -503,7 +528,7 @@ $ dpkg -l | less # walk through all installed packages
 $ dpkg -l {package_name}
 $ dpkg -l vlc # example 
 
-# tar multiple files: #TODO: python code at concat_dfs.py at the end!!!
+# tar multiple files:
 $ cd /path/to/dir
 $ tar -cvzf my_files.tar.gz file1 file2
 
@@ -532,3 +557,6 @@ $ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_
 
 $ oc describe quota
 $ oc describe limitranges
+
+
+ground forces Thousands Of German Prisoners Corralled In A Town Square In Germany, Are Photographed By 1St Tac Af Combat Cameraman Sgt. Joseph M. Beach, Jr.  These Are But A Small Part Of The Us Army'S Bag Of Ex-Supermen Rounded Up As The American Ground And Air Forces (U.S. Air Force Number 57178AC) History: Negative received 21 April 1945 from BPR (Air Forces Group).  Stamped:  "Passed for Publication, Field Press Censor."

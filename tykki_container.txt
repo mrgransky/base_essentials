@@ -7,7 +7,7 @@ Comment out or delete the line:
 
 # export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 
-Save and exit.
+Save and exit: Esc => :wq!
 
 Apply ~/.bashrc Changes and Verify:
 
@@ -26,7 +26,7 @@ Phase 2: Delete the Old CondaCSC Directory Content
 $ module purge
 $ module load tykky
 $ cd /projappl/project_2004072/
-$ ls -l CondaCSC
+$ ls -l CondaCSC # if already exists
 
 $ mv -v CondaCSC CondaCSC_OLD_$(date +%Y%m%d)
 # # Then, after confirming the new one works, you can delete CondaCSC_OLD_*
@@ -34,7 +34,7 @@ $ mv -v CondaCSC CondaCSC_OLD_$(date +%Y%m%d)
 Recreate the Empty Directory for the New Installation:
 We need an empty directory for Tykky to install into.
 
-$ mkdir CondaCSC
+$ mkdir -v CondaCSC
 
 Phase 3: Create the New Tykky Environment (Named CondaCSC)
 
@@ -49,13 +49,13 @@ name: CondaCSC_env
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
+  - python=3.10
 
 Create requirements.txt (in the same location) for pip packages.
 
 $ conda-containerize new --prefix CondaCSC environment.yml
 
-Phase 4: Set Up PATH for the New CondaCSC Environment
+# Phase 4: Set Up PATH for the New CondaCSC Environment
 
 $ cd
 $ vim ~/.bashrc
@@ -63,16 +63,14 @@ $ vim ~/.bashrc
 # At the end of ~/.bashrc
 export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 
-Save and exit.
-Log out of Puhti and log back in (most reliable).
+Save and exit: Esc => :wq!
+Log out of Puhti or Mahti and log back in (most reliable).
 
 Or source ~/.bashrc.
 
 Verify:
 
 $ echo $PATH
-
-$ which python
 $ which pip
 $ which conda # This might still be a shell function, but should now operate in context of Tykky wrappers
 
@@ -87,5 +85,51 @@ $ python --version
 continue with package installation:
 $ module purge
 $ module load tykky
+$ cd /projappl/project_2004072
+$ vim packages.sh
 # modify packages.sh file: <<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>
+# Example:
+[alijanif@mahti-login11 project_2004072]$ cat packages.sh 
+
+echo "Checking PATH and python/pip/conda"
+echo $PATH
+which python
+which pip
+which conda
+conda list --show-channel-urls
+pip cache info
+pip cache purge
+
+echo "Loading latest CUDA module for cluster: $SLURM_CLUSTER_NAME"
+if [ "$SLURM_CLUSTER_NAME" = "mahti" ]; then
+  module load gcc/10.4
+else
+  module load gcc/13.2
+fi
+
+module load cuda/12.6
+
+nvcc --version
+which nvcc
+
+echo "Upgrading pip and setuptools"
+pip install --upgrade pip setuptools wheel
+
+echo "Installing packages"
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+pip install PyDrive2 google-api-python-client optree ftfy tabulate netCDF4 h5netcdf
+pip install python-swiftclient rasterio geopandas pipdeptree
+pip install ipywidgets nbclassic jupyterlab
+pip install transformers triton flash-attn bitsandbytes accelerate umap-learn hdbscan kneed sentence-transformers keybert 
+pip install scikit-learn rake-nltk fuzzywuzzy rapidfuzz fasttext plotly gensim pyarrow scipy stanza nltk joblib pillow pydantic
+pip install numba dill matplotlib seaborn requests selenium beautifulsoup4 lxml html5lib pillow pyenchant pyspelling langdetect libvoikko
+pip install wordcloud tenacity natsort scikit-image scikit-multilearn openpyxl csvkit certifi sentencepiece
+
+echo "Checking installed packages"
+conda list --show-channel-urls
+pipdeptree --reverse --packages torch
+pipdeptree --reverse --packages blis
+pipdeptree --reverse --packages transformers
+
+
 $ conda-containerize update CondaCSC --post-install packages.sh

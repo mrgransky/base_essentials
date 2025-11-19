@@ -70,7 +70,7 @@ if __name__ == "__main__":
         print(f"Server ID: {server_id}")
         print(f"Host: {server['host']}")
         print(f"Country: {server['country']}")
-        print(f"Latency: {server['_latency']}")
+        print(f"Latency: {server['_latency']} ms")
         print(f"Load: {server['_load']}")
         print("----")
     speed_results = check_internet_speed(available_servers, server_id=32643)

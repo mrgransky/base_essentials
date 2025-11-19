@@ -1,3 +1,3189 @@
+import torch
+import copy
+from typing import Union, List, Optional
+import bitsandbytes as bnb  # Assuming installed, as in your adapters.py
+
+class AdaLoRALinear(torch.nn.Module):
+    """
+    AdaLoRA (Adaptive Low-Rank Adaptation) for CLIP.
+    
+    Parametrizes updates as Δ = P Λ Q, with pruning of Λ based on importance.
+    Supports quantization for base weights (QAdaLoRA).
+    
+    Reference: Zhang et al., "AdaLoRA: Adaptive Budget Allocation for Parameter-Efficient Fine-Tuning" (ICLR 2023)
+    
+    Args:
+        in_features: Input dimension
+        out_features: Output dimension
+        device: Device for tensors
+        rank: Initial rank (overprovisioned)
+        alpha: Scaling factor
+        dropout: Dropout rate (unused in AdaLoRA, kept for compatibility)
+        bias: Include bias
+        quantized: Use quantized base weights
+        quantization_bits: 4 or 8 bits
+        compute_dtype: Dtype for quantized compute
+    """
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        device: Union[str, torch.device],
+        rank: int,
+        alpha: float,
+        dropout: float,
+        bias: bool,
+        quantized: bool = False,
+        quantization_bits: int = 4,
+        compute_dtype: torch.dtype = torch.float16,
+    ):
+        super().__init__()
+        
+        self.in_features = in_features
+        self.out_features = out_features
+        self.device = device
+        self.initial_rank = rank
+        self.current_rank = rank  # Will decrease with pruning
+        self.alpha = alpha
+        self.scale = alpha / rank  # Fixed to initial rank, as per paper
+        self.quantized = quantized
+        self.quantization_bits = quantization_bits
+        self.compute_dtype = compute_dtype
+        
+        # Base linear layer (quantized if enabled)
+        if quantized:
+            if quantization_bits == 4:
+                self.linear = bnb.nn.Linear4bit(
+                    in_features,
+                    out_features,
+                    bias=bias,
+                    compute_dtype=compute_dtype,
+                    compress_statistics=True,
+                    quant_type='nf4',
+                )
+            elif quantization_bits == 8:
+                self.linear = bnb.nn.Linear8bitLt(
+                    in_features,
+                    out_features,
+                    bias=bias,
+                    has_fp16_weights=False,
+                    threshold=6.0,
+                )
+            else:
+                raise ValueError(f"Unsupported bits: {quantization_bits}. Use 4 or 8.")
+        else:
+            self.linear = torch.nn.Linear(in_features, out_features, bias=bias)
+        
+        # SVD components (full precision, trainable)
+        self.lora_P = torch.nn.Parameter(torch.empty((out_features, rank)).normal_(mean=0, std=1))
+        self.lora_Q = torch.nn.Parameter(torch.empty((rank, in_features)).normal_(mean=0, std=1))
+        self.lora_lambda = torch.nn.Parameter(torch.zeros(rank))
+        
+        # EMA buffers for sensitivity (I) and uncertainty (U)
+        self.beta1 = 0.85  # For sensitivity EMA
+        self.beta2 = 0.85  # For uncertainty EMA
+        self.register_buffer('sensitivity_P', torch.zeros_like(self.lora_P))
+        self.register_buffer('uncertainty_P', torch.zeros_like(self.lora_P))
+        self.register_buffer('sensitivity_Q', torch.zeros_like(self.lora_Q))
+        self.register_buffer('uncertainty_Q', torch.zeros_like(self.lora_Q))
+        self.register_buffer('sensitivity_lambda', torch.zeros_like(self.lora_lambda))
+        self.register_buffer('uncertainty_lambda', torch.zeros_like(self.lora_lambda))
+        
+        # Freeze base
+        self.linear.weight.requires_grad = False
+        if bias and self.linear.bias is not None:
+            self.linear.bias.requires_grad = False
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        original_output = self.linear(x)
+        
+        if self.current_rank > 0:
+            # Compute Δx = x @ (Q.T @ diag(Λ) @ P.T) = (x @ Q.T) * Λ @ P.T
+            qx = x @ self.lora_Q.T  # (batch, rank)
+            lambda_qx = qx * self.lora_lambda  # Elementwise, since diag
+            delta = lambda_qx @ self.lora_P.T  # (batch, out_features)
+            adapted_output = original_output + self.scale * delta
+        else:
+            adapted_output = original_output
+        
+        return adapted_output
+    
+    def get_ortho_regularizer(self, gamma: float = 0.1) -> torch.Tensor:
+        """
+        Compute orthogonality regularizer (add to loss during training).
+        """
+        eye = torch.eye(self.initial_rank, device=self.device)
+        p_ortho = torch.norm(self.lora_P.T @ self.lora_P - eye, p='fro') ** 2
+        q_ortho = torch.norm(self.lora_Q @ self.lora_Q.T - eye, p='fro') ** 2
+        return gamma * (p_ortho + q_ortho)
+    
+    def update_importance(self):
+        """
+        Update EMA for sensitivity and uncertainty after backward.
+        Call this in training loop after loss.backward().
+        """
+        with torch.no_grad():
+            params_buffers = [
+                (self.lora_P, self.sensitivity_P, self.uncertainty_P),
+                (self.lora_Q, self.sensitivity_Q, self.uncertainty_Q),
+                (self.lora_lambda, self.sensitivity_lambda, self.uncertainty_lambda),
+            ]
+            for param, sens, unc in params_buffers:
+                if param.grad is None:
+                    continue
+                curr_I = torch.abs(param.data * param.grad)
+                sens.mul_(self.beta1).add_(curr_I, alpha=1 - self.beta1)
+                diff = torch.abs(curr_I - sens)
+                unc.mul_(self.beta2).add_(diff, alpha=1 - self.beta2)
+    
+    def get_importance_scores(self) -> torch.Tensor:
+        """
+        Compute group-wise importance S for each triplet i.
+        Returns tensor of shape (initial_rank,) with S_i.
+        """
+        with torch.no_grad():
+            s_lambda = self.sensitivity_lambda * self.uncertainty_lambda  # (rank,)
+            s_P = (self.sensitivity_P * self.uncertainty_P).mean(dim=0)  # Mean over rows (out_features), (rank,)
+            s_Q = (self.sensitivity_Q * self.uncertainty_Q).mean(dim=1)  # Mean over cols (in_features), (rank,)
+            S = s_lambda + s_P + s_Q
+            return S
+    
+    def prune(self, keep_mask: torch.Tensor):
+        """
+        Prune by setting λ[i] = 0 where keep_mask[i] == False.
+        keep_mask: bool tensor (initial_rank,) indicating which to keep.
+        Update current_rank.
+        """
+        with torch.no_grad():
+            self.lora_lambda.data[~keep_mask] = 0
+            self.current_rank = keep_mask.sum().item()
+    
+    def merge_weights(self) -> None:
+        if self.quantized:
+            raise NotImplementedError("Merging for quantized AdaLoRA not recommended.")
+        
+        with torch.no_grad():
+            # Δ = P @ diag(Λ) @ Q
+            lambda_diag = torch.diag(self.lora_lambda)
+            delta = self.lora_P @ lambda_diag @ self.lora_Q
+            self.linear.weight.data += self.scale * delta.T  # Since weight is (out, in), delta.T if needed
+            self.lora_P.data.zero_()
+            self.lora_Q.data.zero_()
+            self.lora_lambda.data.zero_()
+    
+    def get_memory_footprint(self) -> dict:
+        base_params = self.in_features * self.out_features
+        adalora_params = (self.out_features * self.initial_rank) + (self.initial_rank * self.in_features) + self.initial_rank
+        
+        if self.quantized:
+            bytes_per_param = self.quantization_bits / 8.0
+            base_memory_mb = (base_params * bytes_per_param) / (1024 ** 2)
+        else:
+            base_memory_mb = (base_params * 4) / (1024 ** 2)
+        
+        adalora_memory_mb = (adalora_params * 4) / (1024 ** 2)
+        
+        return {
+            'base_params': base_params,
+            'lora_params': adalora_params,  # For consistency with other classes
+            'base_memory_mb': base_memory_mb,
+            'lora_memory_mb': adalora_memory_mb,
+            'total_memory_mb': base_memory_mb + adalora_memory_mb,
+            'quantized': self.quantized,
+            'bits': self.quantization_bits if self.quantized else 32
+        }
+
+def get_adapted_clip(
+    clip_model: torch.nn.Module,
+    method: str,
+    rank: int,
+    alpha: float,
+    dropout: float,
+    target_text_modules: List[str] = ["in_proj", "out_proj", "c_fc", "c_proj"],
+    target_vision_modules: List[str] = ["in_proj", "out_proj", "q_proj", "k_proj", "v_proj", "c_fc", "c_proj"],
+    quantized: bool = False,
+    quantization_bits: int = 8,
+    compute_dtype: torch.dtype = torch.float16,
+    verbose: bool = False,
+):
+    """
+    Apply LoRA, DoRA, VeRA, or AdaLoRA to a CLIP model.
+    
+    Args:
+        clip_model: Pre-trained CLIP model
+        method: Adaptation method - "lora", "qlora", "dora", "qdora", "vera", "qvera", "adalora", "qadalora"
+        rank: Rank of adaptation matrices
+        alpha: Scaling factor for updates (not used for VeRA)
+        dropout: Dropout rate for adaptation layers
+        target_text_modules: Text encoder modules to adapt
+        target_vision_modules: Vision encoder modules to adapt
+        quantized: If True, use quantized base weights (QLoRA/QDoRA/QVeRA/QAdaLoRA)
+        quantization_bits: Bits for quantization (4 or 8)
+        compute_dtype: Computation dtype for quantized operations
+        verbose: Print detailed information
+        
+    Returns:
+        Modified CLIP model with selected adaptation method applied
+    """
+    # Validate method
+    valid_methods = ["lora", "qlora", "dora", "qdora", "vera", "qvera", "adalora", "qadalora"]
+    if method not in valid_methods:
+        raise ValueError(f"method must be one of {valid_methods}, got '{method}'")
+    
+    # Determine base method and quantization
+    base_method = method.replace("q", "") if "q" in method else method
+    quantized = "q" in method
+    
+    # Select adapter class
+    if base_method == "lora":
+        AdapterClass = LoRALinear
+        method_name = "LoRA" if not quantized else "QLoRA"
+    elif base_method == "dora":
+        AdapterClass = DoRALinear
+        method_name = "DoRA" if not quantized else "QDoRA"
+    elif base_method == "vera":
+        AdapterClass = VeRALinear
+        method_name = "VeRA" if not quantized else "QVeRA"
+    elif base_method == "adalora":
+        AdapterClass = AdaLoRALinear
+        method_name = "AdaLoRA" if not quantized else "QAdaLoRA"
+    else:
+        raise ValueError(f"Unsupported base method: {base_method}")
+    
+    # Infer device from model
+    device = next(clip_model.parameters()).device
+    
+    if verbose:
+        print(f"\n[1] PEFT CONFIGURATION")
+        print(f" ├─ Selected Method: {method_name}")
+        print(f" ├─ Adapter Class: {AdapterClass.__name__}")
+        print(f" ├─ Rank: {rank}")
+        print(f" ├─ Alpha: {alpha}")
+        print(f" ├─ Dropout: {dropout}")
+        print(f" └─ Scaling Factor: {alpha/rank if base_method != 'vera' else 'N/A (VeRA uses trainable vectors)'}")
+    
+    # Check CUDA capability for quantization
+    if torch.cuda.is_available():
+        capability = torch.cuda.get_device_capability(device)
+        if capability[0] < 8 and quantized:
+            print(f" └─ Q{method_name} requires CUDA device with compute capability >= 8.0, got {capability} => Falling back to {method_name without Q}")
+            quantized = False
+    
+    # Validate quantization settings
+    if quantized:
+        if quantization_bits not in [4, 8]:
+            raise ValueError(f"quantization_bits must be 4 or 8, got {quantization_bits}")
+        if verbose:
+            print(f"├─ Q{method_name}")
+            print(f" ├─ Quantization: {quantization_bits}-bit")
+            print(f" ├─ Compute dtype: {compute_dtype}")
+            print(f" └─ Memory savings: ~{32/quantization_bits:.1f}x for base weights")
+    
+    # Analyze model architecture
+    if verbose:
+        print(f"\n[2] MODEL ARCHITECTURE ANALYSIS")
+        # Count total parameters
+        total_params = sum(p.numel() for p in clip_model.parameters())
+        total_trainable = sum(p.numel() for p in clip_model.parameters() if p.requires_grad)
+        print(f" ├─ Total Parameters: {total_params:,}")
+        print(f" ├─ Currently Trainable: {total_trainable:,}")
+        print(f" ├─ Device: {device}")
+        print(f" └─ Model Type: {type(clip_model).__name__}")
+        
+        # Analyze text encoder
+        text_linear_count = 0
+        text_mha_count = 0
+        text_dims = set()
+        for name, module in clip_model.transformer.named_modules():
+            if isinstance(module, nn.Linear):
+                if any(t in name.split(".")[-1] for t in target_text_modules):
+                    text_linear_count += 1
+                    text_dims.add((module.in_features, module.out_features))
+            elif isinstance(module, nn.MultiheadAttention):
+                if "in_proj" in target_text_modules:
+                    text_mha_count += 1
+        print(f"\n [TEXT ENCODER]")
+        print(f" ├─ Target modules: {target_text_modules}")
+        print(f" ├─ Linear layers to adapt: {text_linear_count}")
+        print(f" ├─ MultiheadAttention layers to adapt: {text_mha_count}")
+        print(f" ├─ Unique dimension pairs: {len(text_dims)}")
+        if text_dims:
+            print(f" ├─ Dimension ranges:")
+            for in_f, out_f in sorted(text_dims):
+                print(f" │ └─ ({in_f} → {out_f})")
+        
+        # Analyze vision encoder
+        vision_linear_count = 0
+        vision_mha_count = 0
+        vision_dims = set()
+        for name, module in clip_model.visual.named_modules():
+            if isinstance(module, nn.Linear):
+                if any(t in name.split(".")[-1] for t in target_vision_modules):
+                    vision_linear_count += 1
+                    vision_dims.add((module.in_features, module.out_features))
+            elif isinstance(module, nn.MultiheadAttention):
+                if "in_proj" in target_vision_modules:
+                    vision_mha_count += 1
+        print(f"\n [VISION ENCODER]")
+        print(f" ├─ Target modules: {target_vision_modules}")
+        print(f" ├─ Linear layers to adapt: {vision_linear_count}")
+        print(f" ├─ MultiheadAttention layers to adapt: {vision_mha_count}")
+        print(f" ├─ Unique dimension pairs: {len(vision_dims)}")
+        if vision_dims:
+            print(f" ├─ Dimension ranges:")
+            for in_f, out_f in sorted(vision_dims):
+                print(f" │ └─ ({in_f} → {out_f})")
+        
+        # Projection layers
+        print(f"\n [PROJECTION LAYERS]")
+        has_text_proj = hasattr(clip_model, "text_projection") and isinstance(clip_model.text_projection, nn.Parameter)
+        has_vision_proj = hasattr(clip_model.visual, "proj") and isinstance(clip_model.visual.proj, nn.Parameter)
+        if has_text_proj:
+            text_proj_shape = clip_model.text_projection.shape
+            print(f" ├─ Text projection: {text_proj_shape[0]} → {text_proj_shape[1]}")
+        else:
+            print(f" ├─ Text projection: Not found")
+        if has_vision_proj:
+            vision_proj_shape = clip_model.visual.proj.shape
+            print(f" └─ Vision projection: {vision_proj_shape[0]} → {vision_proj_shape[1]}")
+        else:
+            print(f" └─ Vision projection: Not found")
+        print(f"{'='*100}\n")
+    
+    model = copy.deepcopy(clip_model)
+    replaced_modules = set()
+    memory_stats = {
+        'text_encoder': {'base_mb': 0, 'adapter_mb': 0, 'magnitude_mb': 0},
+        'vision_encoder': {'base_mb': 0, 'adapter_mb': 0, 'magnitude_mb': 0},
+        'shared_matrices_mb': 0  # For VeRA
+    }
+    
+    def replace_linear(
+        parent: nn.Module,
+        child_name: str,
+        module: nn.Linear,
+        name_prefix: str,
+        encoder_type: str  # 'text' or 'vision'
+    ):
+        """Replace linear layer with adapter version."""
+        adapter_layer = AdapterClass(
+            in_features=module.in_features,
+            out_features=module.out_features,
+            device=device,
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+            bias=module.bias is not None,
+            quantized=quantized,
+            quantization_bits=quantization_bits,
+            compute_dtype=compute_dtype,
+        )
+        # Copy original weights
+        if not quantized:
+            # For non-quantized, direct copy
+            adapter_layer.linear.weight.data.copy_(module.weight.data)
+            if module.bias is not None:
+                adapter_layer.linear.bias.data.copy_(module.bias.data)
+        else:
+            # For quantized, need to set weights before quantization happens
+            with torch.no_grad():
+                adapter_layer.linear.weight.data = module.weight.data.clone()
+                if module.bias is not None:
+                    adapter_layer.linear.bias.data = module.bias.data.clone()
+        
+        setattr(parent, child_name, adapter_layer)
+        replaced_modules.add(f"{name_prefix}: {child_name}")
+        
+        # Track memory usage
+        mem_info = adapter_layer.get_memory_footprint()
+        encoder_key = 'text_encoder' if encoder_type == 'text' else 'vision_encoder'
+        memory_stats[encoder_key]['base_mb'] += mem_info['base_memory_mb']
+        if base_method == "vera":
+            memory_stats[encoder_key]['adapter_mb'] += mem_info.get('vera_memory_mb', 0)
+        elif base_method == "dora":
+            memory_stats[encoder_key]['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+            memory_stats[encoder_key]['magnitude_mb'] += mem_info.get('magnitude_memory_mb', 0)
+        else:  # lora or adalora
+            memory_stats[encoder_key]['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+        
+        if verbose:
+            statement = (
+                f"Replaced {name_prefix}: {child_name} "
+                f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+            )
+            if base_method == "vera":
+                statement += f"{method_name}: {mem_info.get('vera_memory_mb', 0):.4f}MB (trainable only)]"
+            elif base_method == "dora":
+                statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB, Magnitude: {mem_info.get('magnitude_memory_mb', 0):.2f}MB]"
+            else:
+                statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB]"
+            print(statement)
+    
+    ################################################ Encoders ###############################################
+    # Text encoder
+    if verbose: print("\n[TEXT ENCODER]")
+    for name, module in model.transformer.named_modules():
+        if isinstance(module, nn.Linear) and any(t in name.split(".")[-1] for t in target_text_modules):
+            parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+            parent = model.transformer if parent_name == "" else model.transformer.get_submodule(parent_name)
+            replace_linear(parent, child_name, module, "Text", "text")
+        elif isinstance(module, nn.MultiheadAttention) and "in_proj" in target_text_modules:
+            adapter_layer = AdapterClass(
+                in_features=module.embed_dim,
+                out_features=module.embed_dim * 3,
+                device=device,
+                rank=rank,
+                alpha=alpha,
+                dropout=dropout,
+                bias=True,
+                quantized=quantized,
+                quantization_bits=quantization_bits,
+                compute_dtype=compute_dtype,
+            )
+            
+            with torch.no_grad():
+                if not quantized:
+                    adapter_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+                    adapter_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+                else:
+                    adapter_layer.linear.weight.data = module.in_proj_weight.data.clone()
+                    adapter_layer.linear.bias.data = module.in_proj_bias.data.clone()
+            
+            module.in_proj_weight = adapter_layer.linear.weight
+            module.in_proj_bias = adapter_layer.linear.bias
+            module.register_module(f"{base_method}_in_proj", adapter_layer)
+            replaced_modules.add(f"Text: {name}.in_proj")
+            
+            mem_info = adapter_layer.get_memory_footprint()
+            memory_stats['text_encoder']['base_mb'] += mem_info['base_memory_mb']
+            if base_method == "vera":
+                memory_stats['text_encoder']['adapter_mb'] += mem_info.get('vera_memory_mb', 0)
+            elif base_method == "dora":
+                memory_stats['text_encoder']['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+                memory_stats['text_encoder']['magnitude_mb'] += mem_info.get('magnitude_memory_mb', 0)
+            else:
+                memory_stats['text_encoder']['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+            
+            if verbose:
+                statement = (
+                    f"Wrapped Text MultiheadAttention.{name}.in_proj "
+                    f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+                )
+                if base_method == "vera":
+                    statement += f"{method_name}: {mem_info.get('vera_memory_mb', 0):.4f}MB (trainable only)]"
+                elif base_method == "dora":
+                    statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB, Magnitude: {mem_info.get('magnitude_memory_mb', 0):.2f}MB]"
+                else:
+                    statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB]"
+                print(statement)
+    
+    # Vision encoder
+    if verbose: print("\n[VISION ENCODER]")
+    for name, module in model.visual.named_modules():
+        if isinstance(module, nn.Linear) and any(t in name.split(".")[-1] for t in target_vision_modules):
+            parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+            parent = model.visual if parent_name == "" else model.visual.get_submodule(parent_name)
+            replace_linear(parent, child_name, module, "Vision", "vision")
+        elif isinstance(module, nn.MultiheadAttention) and "in_proj" in target_vision_modules:
+            adapter_layer = AdapterClass(
+                in_features=module.embed_dim,
+                out_features=module.embed_dim * 3,
+                device=device,
+                rank=rank,
+                alpha=alpha,
+                dropout=dropout,
+                bias=True,
+                quantized=quantized,
+                quantization_bits=quantization_bits,
+                compute_dtype=compute_dtype,
+            )
+            
+            with torch.no_grad():
+                if not quantized:
+                    adapter_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+                    adapter_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+                else:
+                    adapter_layer.linear.weight.data = module.in_proj_weight.data.clone()
+                    adapter_layer.linear.bias.data = module.in_proj_bias.data.clone()
+            
+            module.in_proj_weight = adapter_layer.linear.weight
+            module.in_proj_bias = adapter_layer.linear.bias
+            module.register_module(f"{base_method}_in_proj", adapter_layer)
+            replaced_modules.add(f"Vision: {name}.in_proj")
+            
+            mem_info = adapter_layer.get_memory_footprint()
+            memory_stats['vision_encoder']['base_mb'] += mem_info['base_memory_mb']
+            if base_method == "vera":
+                memory_stats['vision_encoder']['adapter_mb'] += mem_info.get('vera_memory_mb', 0)
+            elif base_method == "dora":
+                memory_stats['vision_encoder']['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+                memory_stats['vision_encoder']['magnitude_mb'] += mem_info.get('magnitude_memory_mb', 0)
+            else:
+                memory_stats['vision_encoder']['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+            
+            if verbose:
+                statement = (
+                    f"Wrapped Vision MultiheadAttention.{name}.in_proj "
+                    f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+                )
+                if base_method == "vera":
+                    statement += f"{method_name}: {mem_info.get('vera_memory_mb', 0):.4f}MB (trainable only)]"
+                elif base_method == "dora":
+                    statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB, Magnitude: {mem_info.get('magnitude_memory_mb', 0):.2f}MB]"
+                else:
+                    statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB]"
+                print(statement)
+    
+    ############################################## Projections ##############################################
+    # Text projection
+    if verbose: print("\n[TEXT PROJ]")
+    if hasattr(model, "text_projection") and isinstance(model.text_projection, nn.Parameter):
+        in_dim = model.text_projection.size(0)
+        out_dim = model.text_projection.size(1)
+        adapter_text_proj = AdapterClass(
+            in_features=in_dim,
+            out_features=out_dim,
+            device=device,
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+            bias=False,
+            quantized=quantized,
+            quantization_bits=quantization_bits,
+            compute_dtype=compute_dtype,
+        )
+        
+        with torch.no_grad():
+            if not quantized:
+                adapter_text_proj.linear.weight.data.copy_(model.text_projection.t().data)
+            else:
+                adapter_text_proj.linear.weight.data = model.text_projection.t().data.clone()
+        
+        setattr(model, f"{base_method}_text_projection", adapter_text_proj)
+        
+        def encode_text(self, text):
+            x = self.token_embedding(text).type(self.dtype)
+            x = x + self.positional_embedding.type(self.dtype)
+            x = x.permute(1, 0, 2)
+            x = self.transformer(x)
+            x = x.permute(1, 0, 2)
+            x = self.ln_final(x)
+            x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)]
+            return getattr(self, f"{base_method}_text_projection")(x)
+        
+        model.encode_text = encode_text.__get__(model, type(model))
+        replaced_modules.add("Text: text_projection")
+        
+        mem_info = adapter_text_proj.get_memory_footprint()
+        memory_stats['text_encoder']['base_mb'] += mem_info['base_memory_mb']
+        if base_method == "vera":
+            memory_stats['text_encoder']['adapter_mb'] += mem_info.get('vera_memory_mb', 0)
+        elif base_method == "dora":
+            memory_stats['text_encoder']['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+            memory_stats['text_encoder']['magnitude_mb'] += mem_info.get('magnitude_memory_mb', 0)
+        else:
+            memory_stats['text_encoder']['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+        
+        if verbose:
+            statement = (
+                f"Wrapped text_projection "
+                f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+            )
+            if base_method == "vera":
+                statement += f"{method_name}: {mem_info.get('vera_memory_mb', 0):.4f}MB (trainable only)]"
+            elif base_method == "dora":
+                statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB, Magnitude: {mem_info.get('magnitude_memory_mb', 0):.2f}MB]"
+            else:
+                statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB]"
+            print(statement)
+    
+    # Visual projection (ViT)
+    if verbose: print("\n[VISION PROJ]")
+    if hasattr(model.visual, "proj") and isinstance(model.visual.proj, nn.Parameter):
+        in_dim = model.visual.proj.size(0)
+        out_dim = model.visual.proj.size(1)
+        adapter_visual_proj = AdapterClass(
+            in_features=in_dim,
+            out_features=out_dim,
+            device=device,
+            rank=rank,
+            alpha=alpha,
+            dropout=dropout,
+            bias=False,
+            quantized=quantized,
+            quantization_bits=quantization_bits,
+            compute_dtype=compute_dtype,
+        )
+        
+        with torch.no_grad():
+            if not quantized:
+                adapter_visual_proj.linear.weight.data.copy_(model.visual.proj.t().data)
+            else:
+                adapter_visual_proj.linear.weight.data = model.visual.proj.t().data.clone()
+        
+        setattr(model.visual, f"{base_method}_proj", adapter_visual_proj)
+        
+        def vit_forward(self, x: torch.Tensor):
+            x = self.conv1(x)
+            x = x.reshape(x.shape[0], x.shape[1], -1)
+            x = x.permute(0, 2, 1)
+            cls = self.class_embedding.to(x.dtype) + torch.zeros(
+                x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device
+            )
+            x = torch.cat([cls, x], dim=1)
+            x = x + self.positional_embedding.to(x.dtype)
+            x = self.dropout(x)
+            x = self.ln_pre(x)
+            x = x.permute(1, 0, 2)
+            x = self.transformer(x)
+            x = x.permute(1, 0, 2)
+            x = self.ln_post(x[:, 0, :])
+            x = getattr(self, f"{base_method}_proj")(x)
+            return x
+        
+        model.visual.forward = vit_forward.__get__(model.visual, type(model.visual))
+        replaced_modules.add("Vision: transformer.proj")
+        
+        mem_info = adapter_visual_proj.get_memory_footprint()
+        memory_stats['vision_encoder']['base_mb'] += mem_info['base_memory_mb']
+        if base_method == "vera":
+            memory_stats['vision_encoder']['adapter_mb'] += mem_info.get('vera_memory_mb', 0)
+        elif base_method == "dora":
+            memory_stats['vision_encoder']['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+            memory_stats['vision_encoder']['magnitude_mb'] += mem_info.get('magnitude_memory_mb', 0)
+        else:
+            memory_stats['vision_encoder']['adapter_mb'] += mem_info.get('lora_memory_mb', 0)
+        
+        if verbose:
+            statement = (
+                f"Wrapped visual.proj "
+                f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+            )
+            if base_method == "vera":
+                statement += f"{method_name}: {mem_info.get('vera_memory_mb', 0):.4f}MB (trainable only)]"
+            elif base_method == "dora":
+                statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB, Magnitude: {mem_info.get('magnitude_memory_mb', 0):.2f}MB]"
+            else:
+                statement += f"{method_name}: {mem_info.get('lora_memory_mb', 0):.2f}MB]"
+            print(statement)
+    
+    ############################################################################################################
+    # Calculate shared matrix memory for VeRA (counted only once, not per-layer)
+    if base_method == "vera":
+        # Get actual max_dim from shared matrices
+        key = (rank, device)
+        if key in VeRALinear._shared_matrices:
+            _, _, max_dim = VeRALinear._shared_matrices[key]
+            shared_A_mb = (rank * max_dim * 4) / (1024 ** 2)
+            shared_B_mb = (max_dim * rank * 4) / (1024 ** 2)
+            memory_stats['shared_matrices_mb'] = shared_A_mb + shared_B_mb
+    
+    if verbose:
+        print(f"\nApplied {method_name} to the following modules:")
+        for module in sorted(replaced_modules):
+            print(f" - {module}")
+        
+        print("\nMemory Footprint Summary:")
+        if base_method == "vera":
+            print(f"{'Encoder':<20} {'Base (MB)':<15} {'Trainable (MB)':<15} {'Total (MB)':<15}")
+        elif base_method == "dora":
+            print(f"{'Encoder':<20} {'Base (MB)':<15} {'LoRA (MB)':<15} {'Magnitude (MB)':<15} {'Total (MB)':<15}")
+        else:
+            print(f"{'Encoder':<20} {'Base (MB)':<15} {f'{method_name} (MB)':<15} {'Total (MB)':<15}")
+        print("-"*80)
+        
+        for encoder, stats in memory_stats.items():
+            if encoder == 'shared_matrices_mb':
+                continue
+            if base_method == "dora":
+                total = stats['base_mb'] + stats['adapter_mb'] + stats['magnitude_mb']
+                print(
+                    f"{encoder:<20} {stats['base_mb']:<15.2f} {stats['adapter_mb']:<15.2f} "
+                    f"{stats['magnitude_mb']:<15.2f} {total:<15.2f}"
+                )
+            else:
+                total = stats['base_mb'] + stats['adapter_mb']
+                print(f"{encoder:<20} {stats['base_mb']:<15.2f} {stats['adapter_mb']:<15.2f} {total:<15.2f}")
+        
+        overall_base = sum(s['base_mb'] for k, s in memory_stats.items() if k != 'shared_matrices_mb')
+        overall_adapter = sum(s['adapter_mb'] for k, s in memory_stats.items() if k != 'shared_matrices_mb')
+        overall_magnitude = sum(s.get('magnitude_mb', 0) for k, s in memory_stats.items() if k != 'shared_matrices_mb')
+        
+        if base_method == "vera":
+            # Add shared matrices
+            print("-"*80)
+            print(f"{'Shared Matrices':<20} {'-':<15} {'-':<15} {memory_stats['shared_matrices_mb']:<15.2f}")
+            overall_total = overall_base + overall_adapter + memory_stats['shared_matrices_mb']
+        elif base_method == "dora":
+            overall_total = overall_base + overall_adapter + overall_magnitude
+        else:
+            overall_total = overall_base + overall_adapter
+        
+        print("-"*80)
+        if base_method == "dora":
+            print(
+                f"{'TOTAL':<20} {overall_base:<15.2f} {overall_adapter:<15.2f} "
+                f"{overall_magnitude:<15.2f} {overall_total:<15.2f}"
+            )
+        else:
+            print(f"{'TOTAL':<20} {overall_base:<15.2f} {overall_adapter:<15.2f} {overall_total:<15.2f}")
+        
+        if quantized:
+            # Calculate memory savings
+            full_precision_base = overall_base * (32 / quantization_bits)
+            savings = full_precision_base - overall_base
+            savings_pct = (savings / full_precision_base) * 100
+            
+            print("\n" + "="*80)
+            print("Quantization Savings:")
+            print(f"  Full precision base: {full_precision_base:.2f} MB")
+            print(f"  Quantized base: {overall_base:.2f} MB")
+            print(f"  Memory saved: {savings:.2f} MB ({savings_pct:.1f}%)")
+        
+        # Method-specific statistics
+        print(f"\n{method_name} Statistics:")
+        if base_method == "vera":
+            print(f"\tShared frozen matrices: {memory_stats['shared_matrices_mb']} MB")
+            print(f"\tTrainable scaling vectors: {overall_adapter:.4f} MB")
+            print(f"\tTotal trainable: {overall_adapter:.4f} MB")
+            print(f"\tFrozen base weights: {overall_base:.3f} MB")
+            print(f"\tParameter reduction vs LoRA: ~{(1 - overall_adapter/(overall_adapter + overall_base))*100:.1f}%")
+        elif base_method == "dora":
+            print(f"\tTrainable magnitude parameters: {overall_magnitude:.4f} MB")
+            print(f"\tTrainable LoRA parameters: {overall_adapter:.4f} MB")
+            print(f"\tTotal trainable: {overall_adapter + overall_magnitude:.4f} MB")
+            print(f"\tFrozen directional base: {overall_base:.3f} MB")
+    
+    # Freeze all non-adapter parameters
+    for name, param in model.named_parameters():
+        if base_method == "vera":
+            param.requires_grad = "lambda_d" in name or "lambda_b" in name
+        elif base_method == "dora":
+            param.requires_grad = "lora_A" in name or "lora_B" in name or "magnitude" in name
+        elif base_method == "adalora":
+            param.requires_grad = "P" in name or "Q" in name or "lamb" in name
+        else:  # lora
+            param.requires_grad = "lora_A" in name or "lora_B" in name
+    
+    return model
+
+def get_lora_clip(
+		clip_model: torch.nn.Module,
+		lora_rank: int,
+		lora_alpha: float,
+		lora_dropout: float,
+		target_text_modules: List[str] = ["in_proj", "out_proj", "c_fc", "c_proj"],
+		target_vision_modules: List[str] = ["in_proj", "out_proj", "q_proj", "k_proj", "v_proj", "c_fc", "c_proj"],
+		quantized: bool = False,
+		quantization_bits: int=8,
+		compute_dtype: torch.dtype = torch.float16,
+		verbose: bool = False,
+	):
+	"""
+	Apply LoRA or QLoRA to a CLIP model.
+	
+	Args:
+			clip_model: Pre-trained CLIP model
+			lora_rank: Rank of LoRA matrices
+			lora_alpha: Scaling factor for LoRA updates
+			lora_dropout: Dropout rate for LoRA layers
+			target_text_modules: Text encoder modules to adapt
+			target_vision_modules: Vision encoder modules to adapt
+			quantized: If True, use QLoRA (quantized base weights)
+			quantization_bits: Bits for quantization (4 or 8)
+			compute_dtype: Computation dtype for quantized operations
+			verbose: Print detailed information
+	
+	Returns:
+			Modified CLIP model with LoRA/QLoRA applied
+	"""
+	capability = torch.cuda.get_device_capability()
+	if capability[0] < 8 and quantized:
+		print(f"   └─ QLoRA requires CUDA device with compute capability >= 8.0, got {capability} => Falling back to LoRA")
+		quantized = False
+
+	# Validate quantization settings
+	if quantized:
+		if quantization_bits not in [4, 8]:
+			raise ValueError(f"quantization_bits must be 4 or 8, got {quantization_bits}")
+		if verbose:
+			print(f"├─ QLoRA")
+			print(f"   ├─ Quantization: {quantization_bits}-bit")
+			print(f"   ├─ Compute dtype: {compute_dtype}")
+			print(f"   └─ Memory savings: ~{32/quantization_bits:.1f}x for base weights")
+	
+	model = copy.deepcopy(clip_model)
+	replaced_modules = set()
+	memory_stats = {
+		'text_encoder': {'base_mb': 0, 'lora_mb': 0},
+		'vision_encoder': {'base_mb': 0, 'lora_mb': 0}
+	}
+	
+	def replace_linear(
+		parent: torch.nn.Module,
+		child_name: str,
+		module: torch.nn.Linear,
+		name_prefix: str,
+		encoder_type: str  # 'text' or 'vision'
+	):
+		"""Replace linear layer with LoRA/QLoRA version."""
+		lora_layer = LoRALinear(
+			in_features=module.in_features,
+			out_features=module.out_features,
+			rank=lora_rank,
+			alpha=lora_alpha,
+			dropout=lora_dropout,
+			bias=module.bias is not None,
+			quantized=quantized,
+			quantization_bits=quantization_bits,
+			compute_dtype=compute_dtype,
+		)
+		
+		# Copy original weights
+		if not quantized:
+			# For non-quantized, direct copy
+			lora_layer.linear.weight.data.copy_(module.weight.data)
+			if module.bias is not None:
+				lora_layer.linear.bias.data.copy_(module.bias.data)
+		else:
+			# For quantized, need to set weights before quantization happens
+			with torch.no_grad():
+				lora_layer.linear.weight.data = module.weight.data.clone()
+				if module.bias is not None:
+					lora_layer.linear.bias.data = module.bias.data.clone()
+		
+		setattr(parent, child_name, lora_layer)
+		replaced_modules.add(f"{name_prefix}: {child_name}")
+		
+		# Track memory usage
+		mem_info = lora_layer.get_memory_footprint()
+		encoder_key = 'text_encoder' if encoder_type == 'text' else 'vision_encoder'
+		memory_stats[encoder_key]['base_mb'] += mem_info['base_memory_mb']
+		memory_stats[encoder_key]['lora_mb'] += mem_info['lora_memory_mb']
+		
+		if verbose:
+			print(
+				f"Replaced {name_prefix}: {child_name} "
+				f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+				f"LoRA: {mem_info['lora_memory_mb']:.2f}MB]"
+			)
+	
+	################################################ Encoders ###############################################
+	
+	# Text encoder
+	for name, module in model.transformer.named_modules():
+		if isinstance(module, nn.Linear) and any(t in name.split(".")[-1] for t in target_text_modules):
+			parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+			parent = model.transformer if parent_name == "" else model.transformer.get_submodule(parent_name)
+			replace_linear(parent, child_name, module, "Text", "text")
+		elif isinstance(module, nn.MultiheadAttention) and "in_proj" in target_text_modules:
+			lora_layer = LoRALinear(
+				in_features=module.embed_dim,
+				out_features=module.embed_dim * 3,
+				rank=lora_rank,
+				alpha=lora_alpha,
+				dropout=lora_dropout,
+				bias=True,
+				quantized=quantized,
+				quantization_bits=quantization_bits,
+				compute_dtype=compute_dtype,
+			)
+			with torch.no_grad():
+				if not quantized:
+					lora_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+					lora_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+				else:
+					lora_layer.linear.weight.data = module.in_proj_weight.data.clone()
+					lora_layer.linear.bias.data = module.in_proj_bias.data.clone()
+			
+			module.in_proj_weight = lora_layer.linear.weight
+			module.in_proj_bias = lora_layer.linear.bias
+			module.register_module("lora_in_proj", lora_layer)
+			replaced_modules.add(f"Text: {name}.in_proj")
+			
+			mem_info = lora_layer.get_memory_footprint()
+			memory_stats['text_encoder']['base_mb'] += mem_info['base_memory_mb']
+			memory_stats['text_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+			
+			if verbose:
+				print(
+					f"Wrapped Text MultiheadAttention.{name}.in_proj "
+					f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+					f"LoRA: {mem_info['lora_memory_mb']:.2f}MB]"
+				)
+	
+	# Vision encoder
+	for name, module in model.visual.named_modules():
+		if isinstance(module, nn.Linear) and any(t in name.split(".")[-1] for t in target_vision_modules):
+			parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+			parent = model.visual if parent_name == "" else model.visual.get_submodule(parent_name)
+			replace_linear(parent, child_name, module, "Vision", "vision")
+		elif isinstance(module, nn.MultiheadAttention) and "in_proj" in target_vision_modules:
+			lora_layer = LoRALinear(
+				in_features=module.embed_dim,
+				out_features=module.embed_dim * 3,
+				rank=lora_rank,
+				alpha=lora_alpha,
+				dropout=lora_dropout,
+				bias=True,
+				quantized=quantized,
+				quantization_bits=quantization_bits,
+				compute_dtype=compute_dtype,
+			)
+			
+			with torch.no_grad():
+				if not quantized:
+					lora_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+					lora_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+				else:
+					lora_layer.linear.weight.data = module.in_proj_weight.data.clone()
+					lora_layer.linear.bias.data = module.in_proj_bias.data.clone()
+			
+			module.in_proj_weight = lora_layer.linear.weight
+			module.in_proj_bias = lora_layer.linear.bias
+			module.register_module("lora_in_proj", lora_layer)
+			replaced_modules.add(f"Vision: {name}.in_proj")
+			
+			mem_info = lora_layer.get_memory_footprint()
+			memory_stats['vision_encoder']['base_mb'] += mem_info['base_memory_mb']
+			memory_stats['vision_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+			
+			if verbose:
+				print(
+					f"Wrapped Vision MultiheadAttention.{name}.in_proj "
+					f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+					f"LoRA: {mem_info['lora_memory_mb']:.2f}MB]"
+				)
+	
+	############################################## Projections ##############################################
+	
+	# Text projection
+	if hasattr(model, "text_projection") and isinstance(model.text_projection, nn.Parameter):
+		in_dim = model.text_projection.size(0)
+		out_dim = model.text_projection.size(1)
+		lora_text_proj = LoRALinear(
+			in_features=in_dim,
+			out_features=out_dim,
+			rank=lora_rank,
+			alpha=lora_alpha,
+			dropout=lora_dropout,
+			bias=False,
+			quantized=quantized,
+			quantization_bits=quantization_bits,
+			compute_dtype=compute_dtype,
+		)
+		
+		with torch.no_grad():
+			if not quantized:
+				lora_text_proj.linear.weight.data.copy_(model.text_projection.t().data)
+			else:
+				lora_text_proj.linear.weight.data = model.text_projection.t().data.clone()
+		
+		model.lora_text_projection = lora_text_proj
+		
+		def encode_text(self, text):
+			x = self.token_embedding(text).type(self.dtype)
+			x = x + self.positional_embedding.type(self.dtype)
+			x = x.permute(1, 0, 2)
+			x = self.transformer(x)
+			x = x.permute(1, 0, 2)
+			x = self.ln_final(x)
+			x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)]
+			return self.lora_text_projection(x)
+		
+		model.encode_text = encode_text.__get__(model, type(model))
+		replaced_modules.add("Text: text_projection")
+		
+		mem_info = lora_text_proj.get_memory_footprint()
+		memory_stats['text_encoder']['base_mb'] += mem_info['base_memory_mb']
+		memory_stats['text_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+		
+		if verbose:
+			print(
+				f"Wrapped text_projection "
+				f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+				f"LoRA: {mem_info['lora_memory_mb']:.2f}MB]"
+			)
+	
+	# Visual projection (ViT)
+	if hasattr(model.visual, "proj") and isinstance(model.visual.proj, nn.Parameter):
+		in_dim = model.visual.proj.size(0)
+		out_dim = model.visual.proj.size(1)
+		lora_visual_proj = LoRALinear(
+			in_features=in_dim,
+			out_features=out_dim,
+			rank=lora_rank,
+			alpha=lora_alpha,
+			dropout=lora_dropout,
+			bias=False,
+			quantized=quantized,
+			quantization_bits=quantization_bits,
+			compute_dtype=compute_dtype,
+		)
+		
+		with torch.no_grad():
+			if not quantized:
+				lora_visual_proj.linear.weight.data.copy_(model.visual.proj.t().data)
+			else:
+				lora_visual_proj.linear.weight.data = model.visual.proj.t().data.clone()
+		
+		model.visual.lora_proj = lora_visual_proj
+		
+		def vit_forward(self, x: torch.Tensor):
+			x = self.conv1(x)
+			x = x.reshape(x.shape[0], x.shape[1], -1)
+			x = x.permute(0, 2, 1)
+			cls = self.class_embedding.to(x.dtype) + torch.zeros(
+				x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device
+			)
+			x = torch.cat([cls, x], dim=1)
+			x = x + self.positional_embedding.to(x.dtype)
+			x = self.dropout(x)
+			x = self.ln_pre(x)
+			x = x.permute(1, 0, 2)
+			x = self.transformer(x)
+			x = x.permute(1, 0, 2)
+			x = self.ln_post(x[:, 0, :])
+			x = self.lora_proj(x)
+			return x
+		
+		model.visual.forward = vit_forward.__get__(model.visual, type(model.visual))
+		replaced_modules.add("Vision: transformer.proj")
+		
+		mem_info = lora_visual_proj.get_memory_footprint()
+		memory_stats['vision_encoder']['base_mb'] += mem_info['base_memory_mb']
+		memory_stats['vision_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+		
+		if verbose:
+			print(
+				f"Wrapped visual.proj "
+				f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+				f"LoRA: {mem_info['lora_memory_mb']:.2f}MB]"
+			)
+	############################################################################################################
+	
+	if verbose:
+		print("\n" + "="*80)
+		print("Applied LoRA to the following modules:")
+		for module in sorted(replaced_modules):
+			print(f" - {module}")
+		
+		print("\n" + "="*80)
+		print("Memory Footprint Summary:")
+		print(f"{'Encoder':<20} {'Base (MB)':<15} {'LoRA (MB)':<15} {'Total (MB)':<15}")
+		print("-"*80)
+		
+		for encoder, stats in memory_stats.items():
+			total = stats['base_mb'] + stats['lora_mb']
+			print(f"{encoder:<20} {stats['base_mb']:<15.2f} {stats['lora_mb']:<15.2f} {total:<15.2f}")
+		
+		overall_base = sum(s['base_mb'] for s in memory_stats.values())
+		overall_lora = sum(s['lora_mb'] for s in memory_stats.values())
+		overall_total = overall_base + overall_lora
+		
+		print("-"*80)
+		print(f"{'TOTAL':<20} {overall_base:<15.2f} {overall_lora:<15.2f} {overall_total:<15.2f}")
+		
+		if quantized:
+			# Calculate memory savings
+			full_precision_base = overall_base * (32 / quantization_bits)
+			savings = full_precision_base - overall_base
+			savings_pct = (savings / full_precision_base) * 100
+			
+			print("\n" + "="*80)
+			print("Quantization Savings:")
+			print(f"  Full precision base: {full_precision_base:.2f} MB")
+			print(f"  Quantized base: {overall_base:.2f} MB")
+			print(f"  Memory saved: {savings:.2f} MB ({savings_pct:.1f}%)")
+		print("="*80)
+	
+	# Freeze all non-LoRA parameters
+	for name, param in model.named_parameters():
+		param.requires_grad = "lora_A" in name or "lora_B" in name
+	
+	return model
+
+def get_dora_clip(
+		clip_model: torch.nn.Module,
+		lora_rank: int,
+		lora_alpha: float,
+		lora_dropout: float,
+		target_text_modules: list = ["in_proj", "out_proj", "c_fc", "c_proj"],
+		target_vision_modules: list = ["in_proj", "out_proj", "q_proj", "k_proj", "v_proj", "c_fc", "c_proj"],
+		quantized: bool=False,
+		quantization_bits: int=8,
+		compute_dtype: torch.dtype=torch.float16,
+		verbose: bool=False,
+	):
+	"""
+	Apply DoRA (Weight-Decomposed Low-Rank Adaptation) to a CLIP model.
+	
+	DoRA decomposes pre-trained weights into magnitude and direction components,
+	applying LoRA updates only to the direction while learning magnitude scaling.
+	
+	Args:
+		clip_model: Pre-trained CLIP model
+		lora_rank: Rank of LoRA matrices
+		lora_alpha: Scaling factor for LoRA updates
+		lora_dropout: Dropout rate for LoRA layers
+		target_text_modules: Text encoder modules to adapt
+		target_vision_modules: Vision encoder modules to adapt
+		quantized: If True, use QDoRA (quantized base weights)
+		quantization_bits: Bits for quantization (4 or 8)
+		compute_dtype: Computation dtype for quantized operations
+		verbose: Print detailed information
+	
+	Returns:
+		Modified CLIP model with DoRA applied
+	"""
+	# Check CUDA capability for quantization
+	capability = torch.cuda.get_device_capability()
+	if capability[0] < 8 and quantized:
+		print(f"   └─ QDoRA requires CUDA device with compute capability >= 8.0, got {capability} => Falling back to DoRA")
+		quantized = False
+	
+	# Validate quantization settings
+	if quantized:
+		if quantization_bits not in [4, 8]:
+			raise ValueError(f"quantization_bits must be 4 or 8, got {quantization_bits}")
+		if verbose:
+			print(f"├─ QDoRA (Quantized DoRA)")
+			print(f"   ├─ Quantization: {quantization_bits}-bit")
+			print(f"   ├─ Compute dtype: {compute_dtype}")
+			print(f"   └─ Memory savings: ~{32/quantization_bits:.1f}x for base weights")
+	else:
+		if verbose:
+			print(f"├─ DoRA (Weight-Decomposed Low-Rank Adaptation)")
+	
+	model = copy.deepcopy(clip_model)
+	replaced_modules = set()
+	memory_stats = {
+		'text_encoder': {'base_mb': 0, 'lora_mb': 0, 'magnitude_mb': 0},
+		'vision_encoder': {'base_mb': 0, 'lora_mb': 0, 'magnitude_mb': 0}
+	}
+	
+	def replace_linear(
+		parent: torch.nn.Module,
+		child_name: str,
+		module: torch.nn.Linear,
+		name_prefix: str,
+		encoder_type: str  # 'text' or 'vision'
+	):
+		"""Replace linear layer with DoRA version."""
+		dora_layer = DoRALinear(
+			in_features=module.in_features,
+			out_features=module.out_features,
+			rank=lora_rank,
+			alpha=lora_alpha,
+			dropout=lora_dropout,
+			bias=module.bias is not None,
+			quantized=quantized,
+			quantization_bits=quantization_bits,
+			compute_dtype=compute_dtype,
+		)
+		
+		# Copy original weights
+		if not quantized:
+			# For non-quantized, direct copy
+			dora_layer.linear.weight.data.copy_(module.weight.data)
+			if module.bias is not None:
+				dora_layer.linear.bias.data.copy_(module.bias.data)
+		else:
+			# For quantized, need to set weights before quantization happens
+			with torch.no_grad():
+				dora_layer.linear.weight.data = module.weight.data.clone()
+				if module.bias is not None:
+					dora_layer.linear.bias.data = module.bias.data.clone()
+		
+		setattr(parent, child_name, dora_layer)
+		replaced_modules.add(f"{name_prefix}: {child_name}")
+		
+		# Track memory usage
+		mem_info = dora_layer.get_memory_footprint()
+		encoder_key = 'text_encoder' if encoder_type == 'text' else 'vision_encoder'
+		memory_stats[encoder_key]['base_mb'] += mem_info['base_memory_mb']
+		memory_stats[encoder_key]['lora_mb'] += mem_info['lora_memory_mb']
+		memory_stats[encoder_key]['magnitude_mb'] += mem_info['magnitude_memory_mb']
+		
+		if verbose:
+			print(
+				f"Replaced {name_prefix}: {child_name} "
+				f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+				f"LoRA: {mem_info['lora_memory_mb']:.2f}MB, "
+				f"Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+			)
+	
+	################################################ Encoders ###############################################
+	
+	# Text encoder
+	for name, module in model.transformer.named_modules():
+		if isinstance(module, nn.Linear) and any(t in name.split(".")[-1] for t in target_text_modules):
+			parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+			parent = model.transformer if parent_name == "" else model.transformer.get_submodule(parent_name)
+			replace_linear(parent, child_name, module, "Text", "text")
+		elif isinstance(module, nn.MultiheadAttention) and "in_proj" in target_text_modules:
+			dora_layer = DoRALinear(
+				in_features=module.embed_dim,
+				out_features=module.embed_dim * 3,
+				rank=lora_rank,
+				alpha=lora_alpha,
+				dropout=lora_dropout,
+				bias=True,
+				quantized=quantized,
+				quantization_bits=quantization_bits,
+				compute_dtype=compute_dtype,
+			)
+			with torch.no_grad():
+				if not quantized:
+					dora_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+					dora_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+				else:
+					dora_layer.linear.weight.data = module.in_proj_weight.data.clone()
+					dora_layer.linear.bias.data = module.in_proj_bias.data.clone()
+			
+			module.in_proj_weight = dora_layer.linear.weight
+			module.in_proj_bias = dora_layer.linear.bias
+			module.register_module("dora_in_proj", dora_layer)
+			replaced_modules.add(f"Text: {name}.in_proj")
+			
+			mem_info = dora_layer.get_memory_footprint()
+			memory_stats['text_encoder']['base_mb'] += mem_info['base_memory_mb']
+			memory_stats['text_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+			memory_stats['text_encoder']['magnitude_mb'] += mem_info['magnitude_memory_mb']
+			
+			if verbose:
+				print(
+					f"Wrapped Text MultiheadAttention.{name}.in_proj "
+					f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+					f"LoRA: {mem_info['lora_memory_mb']:.2f}MB, "
+					f"Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+				)
+	
+	# Vision encoder
+	for name, module in model.visual.named_modules():
+		if isinstance(module, nn.Linear) and any(t in name.split(".")[-1] for t in target_vision_modules):
+			parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+			parent = model.visual if parent_name == "" else model.visual.get_submodule(parent_name)
+			replace_linear(parent, child_name, module, "Vision", "vision")
+		elif isinstance(module, nn.MultiheadAttention) and "in_proj" in target_vision_modules:
+			dora_layer = DoRALinear(
+				in_features=module.embed_dim,
+				out_features=module.embed_dim * 3,
+				rank=lora_rank,
+				alpha=lora_alpha,
+				dropout=lora_dropout,
+				bias=True,
+				quantized=quantized,
+				quantization_bits=quantization_bits,
+				compute_dtype=compute_dtype,
+			)
+			
+			with torch.no_grad():
+				if not quantized:
+					dora_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+					dora_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+				else:
+					dora_layer.linear.weight.data = module.in_proj_weight.data.clone()
+					dora_layer.linear.bias.data = module.in_proj_bias.data.clone()
+			
+			module.in_proj_weight = dora_layer.linear.weight
+			module.in_proj_bias = dora_layer.linear.bias
+			module.register_module("dora_in_proj", dora_layer)
+			replaced_modules.add(f"Vision: {name}.in_proj")
+			
+			mem_info = dora_layer.get_memory_footprint()
+			memory_stats['vision_encoder']['base_mb'] += mem_info['base_memory_mb']
+			memory_stats['vision_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+			memory_stats['vision_encoder']['magnitude_mb'] += mem_info['magnitude_memory_mb']
+			
+			if verbose:
+				print(
+					f"Wrapped Vision MultiheadAttention.{name}.in_proj "
+					f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+					f"LoRA: {mem_info['lora_memory_mb']:.2f}MB, "
+					f"Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+				)
+	
+	############################################## Projections ##############################################
+	
+	# Text projection
+	if hasattr(model, "text_projection") and isinstance(model.text_projection, nn.Parameter):
+		in_dim = model.text_projection.size(0)
+		out_dim = model.text_projection.size(1)
+		dora_text_proj = DoRALinear(
+			in_features=in_dim,
+			out_features=out_dim,
+			rank=lora_rank,
+			alpha=lora_alpha,
+			dropout=lora_dropout,
+			bias=False,
+			quantized=quantized,
+			quantization_bits=quantization_bits,
+			compute_dtype=compute_dtype,
+		)
+		
+		with torch.no_grad():
+			if not quantized:
+				dora_text_proj.linear.weight.data.copy_(model.text_projection.t().data)
+			else:
+				dora_text_proj.linear.weight.data = model.text_projection.t().data.clone()
+		
+		model.dora_text_projection = dora_text_proj
+		
+		def encode_text(self, text):
+			x = self.token_embedding(text).type(self.dtype)
+			x = x + self.positional_embedding.type(self.dtype)
+			x = x.permute(1, 0, 2)
+			x = self.transformer(x)
+			x = x.permute(1, 0, 2)
+			x = self.ln_final(x)
+			x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)]
+			return self.dora_text_projection(x)
+		
+		model.encode_text = encode_text.__get__(model, type(model))
+		replaced_modules.add("Text: text_projection")
+		
+		mem_info = dora_text_proj.get_memory_footprint()
+		memory_stats['text_encoder']['base_mb'] += mem_info['base_memory_mb']
+		memory_stats['text_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+		memory_stats['text_encoder']['magnitude_mb'] += mem_info['magnitude_memory_mb']
+		
+		if verbose:
+			print(
+				f"Wrapped text_projection "
+				f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+				f"LoRA: {mem_info['lora_memory_mb']:.2f}MB, "
+				f"Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+			)
+	
+	# Visual projection (ViT)
+	if hasattr(model.visual, "proj") and isinstance(model.visual.proj, nn.Parameter):
+		in_dim = model.visual.proj.size(0)
+		out_dim = model.visual.proj.size(1)
+		dora_visual_proj = DoRALinear(
+			in_features=in_dim,
+			out_features=out_dim,
+			rank=lora_rank,
+			alpha=lora_alpha,
+			dropout=lora_dropout,
+			bias=False,
+			quantized=quantized,
+			quantization_bits=quantization_bits,
+			compute_dtype=compute_dtype,
+		)
+		
+		with torch.no_grad():
+			if not quantized:
+				dora_visual_proj.linear.weight.data.copy_(model.visual.proj.t().data)
+			else:
+				dora_visual_proj.linear.weight.data = model.visual.proj.t().data.clone()
+		
+		model.visual.dora_proj = dora_visual_proj
+		
+		def vit_forward(self, x: torch.Tensor):
+			x = self.conv1(x)
+			x = x.reshape(x.shape[0], x.shape[1], -1)
+			x = x.permute(0, 2, 1)
+			cls = self.class_embedding.to(x.dtype) + torch.zeros(
+				x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device
+			)
+			x = torch.cat([cls, x], dim=1)
+			x = x + self.positional_embedding.to(x.dtype)
+			x = self.dropout(x)
+			x = self.ln_pre(x)
+			x = x.permute(1, 0, 2)
+			x = self.transformer(x)
+			x = x.permute(1, 0, 2)
+			x = self.ln_post(x[:, 0, :])
+			x = self.dora_proj(x)
+			return x
+		
+		model.visual.forward = vit_forward.__get__(model.visual, type(model.visual))
+		replaced_modules.add("Vision: transformer.proj")
+		
+		mem_info = dora_visual_proj.get_memory_footprint()
+		memory_stats['vision_encoder']['base_mb'] += mem_info['base_memory_mb']
+		memory_stats['vision_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+		memory_stats['vision_encoder']['magnitude_mb'] += mem_info['magnitude_memory_mb']
+		
+		if verbose:
+			print(
+				f"Wrapped visual.proj "
+				f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+				f"LoRA: {mem_info['lora_memory_mb']:.2f}MB, "
+				f"Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+			)
+	
+	############################################################################################################
+	
+	if verbose:
+		print("\n" + "="*80)
+		print("Applied DoRA to the following modules:")
+		for module in sorted(replaced_modules):
+			print(f" - {module}")
+		
+		print("\n" + "="*80)
+		print("Memory Footprint Summary:")
+		print(f"{'Encoder':<20} {'Base (MB)':<15} {'LoRA (MB)':<15} {'Magnitude (MB)':<15} {'Total (MB)':<15}")
+		print("-"*80)
+		
+		for encoder, stats in memory_stats.items():
+			total = stats['base_mb'] + stats['lora_mb'] + stats['magnitude_mb']
+			print(
+				f"{encoder:<20} {stats['base_mb']:<15.2f} {stats['lora_mb']:<15.2f} "
+				f"{stats['magnitude_mb']:<15.2f} {total:<15.2f}"
+			)
+		
+		overall_base = sum(s['base_mb'] for s in memory_stats.values())
+		overall_lora = sum(s['lora_mb'] for s in memory_stats.values())
+		overall_magnitude = sum(s['magnitude_mb'] for s in memory_stats.values())
+		overall_total = overall_base + overall_lora + overall_magnitude
+		
+		print("-"*80)
+		print(
+			f"{'TOTAL':<20} {overall_base:<15.2f} {overall_lora:<15.2f} "
+			f"{overall_magnitude:<15.2f} {overall_total:<15.2f}"
+		)
+		
+		if quantized:
+			# Calculate memory savings
+			full_precision_base = overall_base * (32 / quantization_bits)
+			savings = full_precision_base - overall_base
+			savings_pct = (savings / full_precision_base) * 100
+			
+			print("\n" + "="*80)
+			print("Quantization Savings:")
+			print(f"  Full precision base: {full_precision_base:.2f} MB")
+			print(f"  Quantized base: {overall_base:.2f} MB")
+			print(f"  Memory saved: {savings:.2f} MB ({savings_pct:.1f}%)")
+		
+		# DoRA-specific statistics
+		print("\n" + "="*80)
+		print("DoRA-Specific Statistics:")
+		print(f"  Trainable magnitude parameters: {overall_magnitude:.2f} MB")
+		print(f"  Trainable LoRA parameters: {overall_lora:.2f} MB")
+		print(f"  Total trainable: {overall_lora + overall_magnitude:.2f} MB")
+		print(f"  Frozen directional base: {overall_base:.2f} MB")
+		print("="*80)
+	
+	# Freeze all non-DoRA parameters (only LoRA and magnitude are trainable)
+	for name, param in model.named_parameters():
+		param.requires_grad = "lora_A" in name or "lora_B" in name or "magnitude" in name
+	
+	return model
+
+def get_adapted_clip(
+	clip_model: torch.nn.Module,
+	method: str,
+	rank: int,
+	alpha: float,
+	dropout: float,
+	target_text_modules: List[str]=["in_proj", "out_proj", "c_fc", "c_proj"],
+	target_vision_modules: List[str]=["in_proj", "out_proj", "q_proj", "k_proj", "v_proj", "c_fc", "c_proj"],
+	quantized: bool=False,
+	quantization_bits: int=8,
+	compute_dtype: torch.dtype=torch.float16,
+	verbose: bool=False,
+):
+	"""
+	Apply LoRA or DoRA to a CLIP model.
+	
+	Args:
+		clip_model: Pre-trained CLIP model
+		method: Adaptation method - "lora" or "dora"
+		rank: Rank of adaptation matrices
+		alpha: Scaling factor for updates
+		dropout: Dropout rate for adaptation layers
+		target_text_modules: Text encoder modules to adapt
+		target_vision_modules: Vision encoder modules to adapt
+		quantized: If True, use quantized base weights (QLoRA/QDoRA)
+		quantization_bits: Bits for quantization (4 or 8)
+		compute_dtype: Computation dtype for quantized operations
+		verbose: Print detailed information
+	
+	Returns:
+		Modified CLIP model with LoRA/DoRA applied
+	"""
+	
+	# Validate method
+	if method not in ["lora", "dora"]:
+		raise ValueError(f"method must be 'lora' or 'dora', got '{method}'")
+	
+	# Select adapter class
+	AdapterClass = DoRALinear if method == "dora" else LoRALinear
+	method_name = "DoRA" if method == "dora" else "LoRA"
+	
+	# Check CUDA capability for quantization
+	capability = torch.cuda.get_device_capability()
+	if capability[0] < 8 and quantized:
+		print(f"   └─ Q{method_name} requires CUDA device with compute capability >= 8.0, got {capability} => Falling back to {method_name}")
+		quantized = False
+
+	# Validate quantization settings
+	if quantized:
+		if quantization_bits not in [4, 8]:
+			raise ValueError(f"quantization_bits must be 4 or 8, got {quantization_bits}")
+		if verbose:
+			print(f"├─ Q{method_name}")
+			print(f"   ├─ Quantization: {quantization_bits}-bit")
+			print(f"   ├─ Compute dtype: {compute_dtype}")
+			print(f"   └─ Memory savings: ~{32/quantization_bits:.1f}x for base weights")
+	
+	model = copy.deepcopy(clip_model)
+	replaced_modules = set()
+	memory_stats = {
+		'text_encoder': {'base_mb': 0, 'lora_mb': 0, 'magnitude_mb': 0},
+		'vision_encoder': {'base_mb': 0, 'lora_mb': 0, 'magnitude_mb': 0}
+	}
+	
+	def replace_linear(
+		parent: torch.nn.Module,
+		child_name: str,
+		module: torch.nn.Linear,
+		name_prefix: str,
+		encoder_type: str  # 'text' or 'vision'
+	):
+		"""Replace linear layer with LoRA/DoRA version."""
+		adapter_layer = AdapterClass(
+			in_features=module.in_features,
+			out_features=module.out_features,
+			rank=rank,
+			alpha=alpha,
+			dropout=dropout,
+			bias=module.bias is not None,
+			quantized=quantized,
+			quantization_bits=quantization_bits,
+			compute_dtype=compute_dtype,
+		)
+		
+		# Copy original weights
+		if not quantized:
+			# For non-quantized, direct copy
+			adapter_layer.linear.weight.data.copy_(module.weight.data)
+			if module.bias is not None:
+				adapter_layer.linear.bias.data.copy_(module.bias.data)
+		else:
+			# For quantized, need to set weights before quantization happens
+			with torch.no_grad():
+				adapter_layer.linear.weight.data = module.weight.data.clone()
+				if module.bias is not None:
+					adapter_layer.linear.bias.data = module.bias.data.clone()
+		
+		setattr(parent, child_name, adapter_layer)
+		replaced_modules.add(f"{name_prefix}: {child_name}")
+		
+		# Track memory usage
+		mem_info = adapter_layer.get_memory_footprint()
+		encoder_key = 'text_encoder' if encoder_type == 'text' else 'vision_encoder'
+		memory_stats[encoder_key]['base_mb'] += mem_info['base_memory_mb']
+		memory_stats[encoder_key]['lora_mb'] += mem_info['lora_memory_mb']
+		if method == "dora":
+			memory_stats[encoder_key]['magnitude_mb'] += mem_info['magnitude_memory_mb']
+		
+		if verbose:
+			statement = (
+				f"Replaced {name_prefix}: {child_name} "
+				f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+				f"{method_name}: {mem_info['lora_memory_mb']:.2f}MB"
+			)
+			if method == "dora":
+				statement += f", Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+			else:
+				statement += "]"
+			print(statement)
+	
+	################################################ Encoders ###############################################
+	
+	# Text encoder
+	if verbose: print("\n[TEXT ENCODER]")
+	for name, module in model.transformer.named_modules():
+		if isinstance(module, torch.nn.Linear) and any(t in name.split(".")[-1] for t in target_text_modules):
+			parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+			parent = model.transformer if parent_name == "" else model.transformer.get_submodule(parent_name)
+			replace_linear(parent, child_name, module, "Text", "text")
+		elif isinstance(module, torch.nn.MultiheadAttention) and "in_proj" in target_text_modules:
+			adapter_layer = AdapterClass(
+				in_features=module.embed_dim,
+				out_features=module.embed_dim * 3,
+				rank=rank,
+				alpha=alpha,
+				dropout=dropout,
+				bias=True,
+				quantized=quantized,
+				quantization_bits=quantization_bits,
+				compute_dtype=compute_dtype,
+			)
+			with torch.no_grad():
+				if not quantized:
+					adapter_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+					adapter_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+				else:
+					adapter_layer.linear.weight.data = module.in_proj_weight.data.clone()
+					adapter_layer.linear.bias.data = module.in_proj_bias.data.clone()
+			
+			module.in_proj_weight = adapter_layer.linear.weight
+			module.in_proj_bias = adapter_layer.linear.bias
+			module.register_module(f"{method}_in_proj", adapter_layer)
+			replaced_modules.add(f"Text: {name}.in_proj")
+			
+			mem_info = adapter_layer.get_memory_footprint()
+			memory_stats['text_encoder']['base_mb'] += mem_info['base_memory_mb']
+			memory_stats['text_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+			if method == "dora":
+				memory_stats['text_encoder']['magnitude_mb'] += mem_info['magnitude_memory_mb']
+			
+			if verbose:
+				statement = (
+					f"Wrapped Text MultiheadAttention.{name}.in_proj "
+					f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+					f"{method_name}: {mem_info['lora_memory_mb']:.2f}MB"
+				)
+				if method == "dora":
+					statement += f", Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+				else:
+					statement += "]"
+				print(statement)
+	
+	# Vision encoder
+	if verbose: print("\n[VISION ENCODER]")
+	for name, module in model.visual.named_modules():
+		if isinstance(module, torch.nn.Linear) and any(t in name.split(".")[-1] for t in target_vision_modules):
+			parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+			parent = model.visual if parent_name == "" else model.visual.get_submodule(parent_name)
+			replace_linear(parent, child_name, module, "Vision", "vision")
+		elif isinstance(module, torch.nn.MultiheadAttention) and "in_proj" in target_vision_modules:
+			adapter_layer = AdapterClass(
+				in_features=module.embed_dim,
+				out_features=module.embed_dim * 3,
+				rank=rank,
+				alpha=alpha,
+				dropout=dropout,
+				bias=True,
+				quantized=quantized,
+				quantization_bits=quantization_bits,
+				compute_dtype=compute_dtype,
+			)
+			
+			with torch.no_grad():
+				if not quantized:
+					adapter_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+					adapter_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+				else:
+					adapter_layer.linear.weight.data = module.in_proj_weight.data.clone()
+					adapter_layer.linear.bias.data = module.in_proj_bias.data.clone()
+			
+			module.in_proj_weight = adapter_layer.linear.weight
+			module.in_proj_bias = adapter_layer.linear.bias
+			module.register_module(f"{method}_in_proj", adapter_layer)
+			replaced_modules.add(f"Vision: {name}.in_proj")
+			
+			mem_info = adapter_layer.get_memory_footprint()
+			memory_stats['vision_encoder']['base_mb'] += mem_info['base_memory_mb']
+			memory_stats['vision_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+			if method == "dora":
+				memory_stats['vision_encoder']['magnitude_mb'] += mem_info['magnitude_memory_mb']
+			
+			if verbose:
+				statement = (
+					f"Wrapped Vision MultiheadAttention.{name}.in_proj "
+					f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+					f"{method_name}: {mem_info['lora_memory_mb']:.2f}MB"
+				)
+				if method == "dora":
+					statement += f", Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+				else:
+					statement += "]"
+				print(statement)
+	############################################## Projections ##############################################
+	
+	# Text projection
+	if verbose: print("\n[TEXT PROJ]")
+	if hasattr(model, "text_projection") and isinstance(model.text_projection, torch.nn.Parameter):
+		in_dim = model.text_projection.size(0)
+		out_dim = model.text_projection.size(1)
+		adapter_text_proj = AdapterClass(
+			in_features=in_dim,
+			out_features=out_dim,
+			rank=rank,
+			alpha=alpha,
+			dropout=dropout,
+			bias=False,
+			quantized=quantized,
+			quantization_bits=quantization_bits,
+			compute_dtype=compute_dtype,
+		)
+		
+		with torch.no_grad():
+			if not quantized:
+				adapter_text_proj.linear.weight.data.copy_(model.text_projection.t().data)
+			else:
+				adapter_text_proj.linear.weight.data = model.text_projection.t().data.clone()
+		
+		setattr(model, f"{method}_text_projection", adapter_text_proj)
+		
+		def encode_text(self, text):
+			x = self.token_embedding(text).type(self.dtype)
+			x = x + self.positional_embedding.type(self.dtype)
+			x = x.permute(1, 0, 2)
+			x = self.transformer(x)
+			x = x.permute(1, 0, 2)
+			x = self.ln_final(x)
+			x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)]
+			return getattr(self, f"{method}_text_projection")(x)
+		
+		model.encode_text = encode_text.__get__(model, type(model))
+		replaced_modules.add("Text: text_projection")
+		
+		mem_info = adapter_text_proj.get_memory_footprint()
+		memory_stats['text_encoder']['base_mb'] += mem_info['base_memory_mb']
+		memory_stats['text_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+		if method == "dora":
+			memory_stats['text_encoder']['magnitude_mb'] += mem_info['magnitude_memory_mb']
+		
+		if verbose:
+			statement = (
+				f"Wrapped text_projection "
+				f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+				f"{method_name}: {mem_info['lora_memory_mb']:.2f}MB"
+			)
+			if method == "dora":
+				statement += f", Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+			else:
+				statement += "]"
+			print(statement)
+	
+	# Visual projection (ViT)
+	if verbose: print("\n[VISION PROJ]")
+	if hasattr(model.visual, "proj") and isinstance(model.visual.proj, torch.nn.Parameter):
+		in_dim = model.visual.proj.size(0)
+		out_dim = model.visual.proj.size(1)
+		adapter_visual_proj = AdapterClass(
+			in_features=in_dim,
+			out_features=out_dim,
+			rank=rank,
+			alpha=alpha,
+			dropout=dropout,
+			bias=False,
+			quantized=quantized,
+			quantization_bits=quantization_bits,
+			compute_dtype=compute_dtype,
+		)
+		
+		with torch.no_grad():
+			if not quantized:
+				adapter_visual_proj.linear.weight.data.copy_(model.visual.proj.t().data)
+			else:
+				adapter_visual_proj.linear.weight.data = model.visual.proj.t().data.clone()
+		
+		setattr(model.visual, f"{method}_proj", adapter_visual_proj)
+		
+		def vit_forward(self, x: torch.Tensor):
+			x = self.conv1(x)
+			x = x.reshape(x.shape[0], x.shape[1], -1)
+			x = x.permute(0, 2, 1)
+			cls = self.class_embedding.to(x.dtype) + torch.zeros(
+				x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device
+			)
+			x = torch.cat([cls, x], dim=1)
+			x = x + self.positional_embedding.to(x.dtype)
+			x = self.dropout(x)
+			x = self.ln_pre(x)
+			x = x.permute(1, 0, 2)
+			x = self.transformer(x)
+			x = x.permute(1, 0, 2)
+			x = self.ln_post(x[:, 0, :])
+			x = getattr(self, f"{method}_proj")(x)
+			return x
+		
+		model.visual.forward = vit_forward.__get__(model.visual, type(model.visual))
+		replaced_modules.add("Vision: transformer.proj")
+		
+		mem_info = adapter_visual_proj.get_memory_footprint()
+		memory_stats['vision_encoder']['base_mb'] += mem_info['base_memory_mb']
+		memory_stats['vision_encoder']['lora_mb'] += mem_info['lora_memory_mb']
+		if method == "dora":
+			memory_stats['vision_encoder']['magnitude_mb'] += mem_info['magnitude_memory_mb']
+		
+		if verbose:
+			statement = (
+				f"Wrapped visual.proj "
+				f"[base: {mem_info['base_memory_mb']:.2f}MB @ {mem_info['bits']}bit, "
+				f"{method_name}: {mem_info['lora_memory_mb']:.2f}MB"
+			)
+			if method == "dora":
+				statement += f", Magnitude: {mem_info['magnitude_memory_mb']:.2f}MB]"
+			else:
+				statement += "]"
+			print(statement)
+	############################################################################################################
+
+	if method == "lora" and verbose:
+		print(f"\nApplied {method_name} to the following modules:")
+		for module in sorted(replaced_modules):
+			print(f" - {module}")
+
+		print("\nMemory Footprint Summary:")
+		print(f"{'Encoder':<20} {'Base (MB)':<15} {f'{method_name} (MB)':<15} {'Total (MB)':<15}")
+		print("-"*70)
+		
+		for encoder, stats in memory_stats.items():
+			total = stats['base_mb'] + stats['lora_mb']
+			print(f"{encoder:<20} {stats['base_mb']:<15.2f} {stats['lora_mb']:<15.2f} {total:<15.2f}")
+		
+		overall_base = sum(s['base_mb'] for s in memory_stats.values())
+		overall_lora = sum(s['lora_mb'] for s in memory_stats.values())
+		overall_total = overall_base + overall_lora
+		
+		print("-"*70)
+		print(f"{'TOTAL':<20} {overall_base:<15.2f} {overall_lora:<15.2f} {overall_total:<15.2f}")
+		
+		if quantized:
+			# Calculate memory savings
+			full_precision_base = overall_base * (32 / quantization_bits)
+			savings = full_precision_base - overall_base
+			savings_pct = (savings / full_precision_base) * 100
+			
+			print("\n" + "="*80)
+			print("Quantization Savings:")
+			print(f"  Full precision base: {full_precision_base:.2f} MB")
+			print(f"  Quantized base: {overall_base:.2f} MB")
+			print(f"  Memory saved: {savings:.2f} MB ({savings_pct:.1f}%)")
+	
+	if method == "dora" and verbose:
+		print(f"\nApplied {method_name} to the following modules:")
+		for module in sorted(replaced_modules):
+			print(f" - {module}")
+
+		print("\nMemory Footprint Summary:")
+		print(f"{'Encoder':<20} {'Base (MB)':<15} {'LoRA (MB)':<15} {'Magnitude (MB)':<15} {'Total (MB)':<15}")
+		print("-"*80)
+		for encoder, stats in memory_stats.items():
+			total = stats['base_mb'] + stats['lora_mb'] + stats['magnitude_mb']
+			print(
+				f"{encoder:<20} {stats['base_mb']:<15.2f} {stats['lora_mb']:<15.2f} "
+				f"{stats['magnitude_mb']:<15.2f} {total:<15.2f}"
+			)
+		
+		overall_base = sum(s['base_mb'] for s in memory_stats.values())
+		overall_lora = sum(s['lora_mb'] for s in memory_stats.values())
+		overall_magnitude = sum(s['magnitude_mb'] for s in memory_stats.values())
+		overall_total = overall_base + overall_lora + overall_magnitude
+		
+		print("-"*80)
+		print(
+			f"{'TOTAL':<20} {overall_base:<15.2f} {overall_lora:<15.2f} "
+			f"{overall_magnitude:<15.2f} {overall_total:<15.2f}"
+		)
+		
+		if quantized:
+			# Calculate memory savings
+			full_precision_base = overall_base * (32 / quantization_bits)
+			savings = full_precision_base - overall_base
+			savings_pct = (savings / full_precision_base) * 100
+			
+			print("\n" + "="*80)
+			print("Quantization Savings:")
+			print(f"  Full precision base: {full_precision_base:.2f} MB")
+			print(f"  Quantized base: {overall_base:.2f} MB")
+			print(f"  Memory saved: {savings:.2f} MB ({savings_pct:.1f}%)")
+		
+		# DoRA-specific statistics
+		print(f"\n{method_name} Statistics:")
+		print(f"\tTrainable magnitude parameters: {overall_magnitude:.2f} MB")
+		print(f"\tTrainable LoRA parameters: {overall_lora:.2f} MB")
+		print(f"\tTotal trainable: {overall_lora + overall_magnitude:.2f} MB")
+		print(f"\tFrozen directional base: {overall_base:.2f} MB")
+
+	# Freeze all non-adapter parameters
+	for name, param in model.named_parameters():
+		param.requires_grad = "lora_A" in name or "lora_B" in name
+		if method == "dora":
+			param.requires_grad = param.requires_grad or "magnitude" in name
+	
+	return model
+
+#############################################
+# without quantization:
+class LoRALinear(torch.nn.Module):
+	def __init__(
+			self,
+			in_features: int,
+			out_features: int,
+			rank: int,
+			alpha: float,
+			dropout: float,
+			bias: bool,
+		):
+		super(LoRALinear, self).__init__()
+		# Original frozen pretrained linear layer from CLIP model
+		self.linear = nn.Linear(in_features, out_features, bias=bias)
+		self.weight = self.linear.weight
+		self.bias = self.linear.bias if bias else None
+
+		# Low-rank adaptation layers to update the original weights 
+		self.lora_A = nn.Linear(in_features, rank, bias=False) # Maps input to a low-rank space
+		self.lora_B = nn.Linear(rank, out_features, bias=False) # Maps low-rank space to output dimension
+
+		self.dropout = nn.Dropout(p=dropout) # regularization to prevent overfitting
+		self.scale = alpha / rank # magnitude of LoRA update
+
+		nn.init.normal_(self.lora_A.weight, mean=0.0, std=1/rank) # Gaussian initialization 
+		nn.init.zeros_(self.lora_B.weight)
+
+		self.linear.weight.requires_grad = False # Freeze original weights
+		if bias:
+			self.linear.bias.requires_grad = False # Freeze original bias
+
+	def forward(self, x: torch.Tensor) -> torch.Tensor:
+		original_output = self.linear(x) # Original frozen pretrained CLIP output
+		lora_output = self.lora_B(self.dropout(self.lora_A(x))) # LoRA update with dropout regularization
+		lora_combined = original_output + self.scale * lora_output
+		return lora_combined
+
+def get_lora_clip(
+		clip_model: torch.nn.Module,
+		lora_rank: int,
+		lora_alpha: float,
+		lora_dropout: float,
+		target_text_modules: List[str]=["in_proj", "out_proj", "c_fc", "c_proj"],
+		target_vision_modules: List[str]=["in_proj", "out_proj", "q_proj", "k_proj", "v_proj", "c_fc", "c_proj"],
+		verbose: bool=False,
+	):
+	model = copy.deepcopy(clip_model)
+	replaced_modules = set()
+
+	# Helper function to replace a linear layer
+	def replace_linear(
+		parent: torch.nn.Module, 
+		child_name: str, 
+		module: torch.nn.Linear, 
+		name_prefix: str,
+	):
+		lora_layer = LoRALinear(
+			in_features=module.in_features,
+			out_features=module.out_features,
+			rank=lora_rank,
+			alpha=lora_alpha,
+			dropout=lora_dropout,
+			bias=module.bias is not None,
+		)
+		lora_layer.linear.weight.data.copy_(module.weight.data)
+		if module.bias is not None:
+			lora_layer.linear.bias.data.copy_(module.bias.data)
+		setattr(parent, child_name, lora_layer)
+		replaced_modules.add(f"{name_prefix}: {child_name}")
+		if verbose: print(f"Replaced {name_prefix}: {child_name}")
+
+	################################################ Encoders ###############################################
+	################ process raw inputs into features, need adaptation for feature extraction ################
+
+	# Text encoder
+	for name, module in model.transformer.named_modules():
+		# Pure Linear layers
+		if isinstance(module, nn.Linear) and any(t in name.split(".")[-1] for t in target_text_modules):
+			parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+			parent = model.transformer if parent_name == "" else model.transformer.get_submodule(parent_name)
+			replace_linear(
+				parent=parent, 
+				child_name=child_name, 
+				module=module, 
+				name_prefix="Text"
+			)
+		# packed Q‑K‑V of MultiheadAttention
+		elif isinstance(module, nn.MultiheadAttention) and "in_proj" in target_text_modules:
+			lora_layer = LoRALinear(
+				in_features=module.embed_dim,
+				out_features=module.embed_dim * 3,
+				rank=lora_rank,
+				alpha=lora_alpha,
+				dropout=lora_dropout,
+				bias=True,
+			)
+			if lora_layer.linear.weight.shape != module.in_proj_weight.shape:
+				print(f"Shape mismatch for Text QKV: expected {module.in_proj_weight.shape}, got {lora_layer.linear.weight.shape}")
+				raise ValueError(f"LoRA rank {lora_rank} does not match module in_proj_weight shape {module.in_proj_weight.shape}")
+			
+			with torch.no_grad():
+				lora_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+				lora_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+
+			# Replace the original in_proj_weight and in_proj_bias with LoRA layers
+			module.in_proj_weight = lora_layer.linear.weight
+			module.in_proj_bias = lora_layer.linear.bias
+			module.register_module("lora_in_proj", lora_layer)
+			replaced_modules.add(f"Text: {name}.in_proj")
+			if verbose:
+				print(
+					f"Replaced Text: {name}.in_proj: {module.in_proj_weight.shape} --> "
+					f"Wrapped Text MultiheadAttention.{name}.in_proj with LoRA"
+				)
+
+	# Vision encoder
+	for name, module in model.visual.named_modules():
+		# Linear layers
+		if isinstance(module, nn.Linear) and any(t in name.split(".")[-1] for t in target_vision_modules):
+			parent_name, child_name = name.rsplit(".", 1) if "." in name else ("", name)
+			parent = model.visual if parent_name == "" else model.visual.get_submodule(parent_name)
+			replace_linear(parent, child_name, module, "Vision")
+		# Packed QKV of MultiheadAttention
+		elif isinstance(module, nn.MultiheadAttention) and "in_proj" in target_vision_modules:
+			lora_layer = LoRALinear(
+				in_features=module.embed_dim,
+				out_features=module.embed_dim * 3,
+				rank=lora_rank,
+				alpha=lora_alpha,
+				dropout=lora_dropout,
+				bias=True,
+			)
+			if lora_layer.linear.weight.shape != module.in_proj_weight.shape:
+				print(f"Shape mismatch for Vision QKV: expected {module.in_proj_weight.shape}, got {lora_layer.linear.weight.shape}")
+				raise ValueError(f"LoRA rank {lora_rank} does not match module in_proj_weight shape {module.in_proj_weight.shape}")
+
+			with torch.no_grad():
+				lora_layer.linear.weight.data.copy_(module.in_proj_weight.data)
+				lora_layer.linear.bias.data.copy_(module.in_proj_bias.data)
+
+			module.in_proj_weight = lora_layer.linear.weight
+			module.in_proj_bias = lora_layer.linear.bias
+			module.register_module("lora_in_proj", lora_layer)
+			replaced_modules.add(f"Vision: {name}.in_proj")
+			if verbose:
+				print(
+					f"Replaced Vision: {name}.in_proj: {module.in_proj_weight.shape} --> "
+					f"Wrapped Vision MultiheadAttention.{name}.in_proj with LoRA"
+				)
+	################################################ Encoders ###############################################
+
+	############################################## Projections ##############################################
+	################## align features into a shared space (need adaptation for alignment) ##################
+	# Text projection
+	if hasattr(model, "text_projection") and isinstance(model.text_projection, nn.Parameter):
+		in_dim = model.text_projection.size(0)
+		out_dim = model.text_projection.size(1)
+		lora_text_proj = LoRALinear(
+			in_features=in_dim,
+			out_features=out_dim,
+			rank=lora_rank,
+			alpha=lora_alpha,
+			dropout=lora_dropout,
+			bias=False,
+		)
+		if lora_text_proj.linear.weight.shape != (out_dim, in_dim):
+			print(f"Shape mismatch for Text projection: expected {(out_dim, in_dim)}, got {lora_text_proj.linear.weight.shape}")
+			raise ValueError(f"LoRA rank {lora_rank} does not match module text_projection shape {model.text_projection.shape}")
+	
+		with torch.no_grad():
+			lora_text_proj.linear.weight.data.copy_(model.text_projection.t().data)
+	
+		model.lora_text_projection = lora_text_proj
+	
+		def encode_text(self, text):
+			x = self.token_embedding(text).type(self.dtype)
+			x = x + self.positional_embedding.type(self.dtype)
+			x = x.permute(1, 0, 2)
+			x = self.transformer(x)
+			x = x.permute(1, 0, 2)
+			x = self.ln_final(x)
+			x = x[torch.arange(x.shape[0]), text.argmax(dim=-1)]
+			return self.lora_text_projection(x)
+
+		model.encode_text = encode_text.__get__(model, type(model))
+		replaced_modules.add("Text: text_projection")
+		if verbose:
+			print(f"Wrapped text_projection with LoRA")
+
+	# Visual projection (ViT)
+	if hasattr(model.visual, "proj") and isinstance(model.visual.proj, nn.Parameter):
+		in_dim = model.visual.proj.size(0)
+		out_dim = model.visual.proj.size(1)
+		lora_visual_proj = LoRALinear(
+			in_features=in_dim,
+			out_features=out_dim,
+			rank=lora_rank,
+			alpha=lora_alpha,
+			dropout=lora_dropout,
+			bias=False,
+		)
+		if lora_visual_proj.linear.weight.shape != (out_dim, in_dim):
+			print(f"Shape mismatch for Vision projection: expected {(out_dim, in_dim)}, got {lora_visual_proj.linear.weight.shape}")
+			raise ValueError(f"LoRA rank {lora_rank} does not match module visual.proj shape {model.visual.proj.shape}")
+		with torch.no_grad():
+			lora_visual_proj.linear.weight.data.copy_(model.visual.proj.t().data)
+
+		model.visual.lora_proj = lora_visual_proj
+	
+		def vit_forward(self, x: torch.Tensor):
+			x = self.conv1(x)
+			x = x.reshape(x.shape[0], x.shape[1], -1)
+			x = x.permute(0, 2, 1) # B, N, C
+			cls = self.class_embedding.to(x.dtype) + torch.zeros(x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device)
+			x = torch.cat([cls, x], dim=1)
+			x = x + self.positional_embedding.to(x.dtype)
+			x = self.dropout(x)
+			x = self.ln_pre(x)
+			x = x.permute(1, 0, 2) # N, B, C
+			x = self.transformer(x)
+			x = x.permute(1, 0, 2) # B, N, C
+			x = self.ln_post(x[:, 0, :]) # CLS token
+			x = self.lora_proj(x) # LoRA projection Head
+			return x
+
+		model.visual.forward = vit_forward.__get__(model.visual, type(model.visual))
+		replaced_modules.add("Vision: transformer.proj")
+
+		if verbose:
+			print(f"Wrapped visual.proj with LoRA")
+	############################################## Projections ##############################################
+
+	if verbose:
+		print("\n><>< Applied LoRA to the following modules:")
+		for module in sorted(replaced_modules):
+			print(f" - {module}")
+
+	# Freeze all non-LoRA parameters:
+	# base model’s weights (and their associated dropout layers) are frozen
+	for name, param in model.named_parameters():
+		param.requires_grad = "lora_A" in name or "lora_B" in name
+
+	return model
+#############################################
+
+
+
+class EarlyStoppingOld:
+	def __init__(
+			self,
+			patience: int = 5,
+			min_delta: float = 1e-3,
+			cumulative_delta: float = 0.01,
+			window_size: int = 5,
+			mode: str = 'min',
+			min_epochs: int = 5,
+			restore_best_weights: bool = True,
+			volatility_threshold: float = 10.0,
+			slope_threshold: float = 0.0,
+			pairwise_imp_threshold: float = 5e-3,
+			min_phases_before_stopping: int = 3,
+		):
+
+		self.patience = patience
+		self.min_delta = min_delta
+		self.cumulative_delta = cumulative_delta
+		self.window_size = window_size
+		self.mode = mode
+		self.min_epochs = min_epochs
+		self.restore_best_weights = restore_best_weights
+		self.volatility_threshold = volatility_threshold
+		self.slope_threshold = slope_threshold
+		self.pairwise_imp_threshold = pairwise_imp_threshold
+		self.min_phases_before_stopping = min_phases_before_stopping
+		self.sign = 1 if mode == 'min' else -1
+		print("="*100)
+		print(
+			f"EarlyStopping [initial] Configuration:\n"
+			f"\tPatience={patience}\n"
+			f"\tMinDelta={min_delta}\n"
+			f"\tCumulativeDelta={cumulative_delta}\n"
+			f"\tWindowSize={window_size}\n"
+			f"\tMinEpochs={min_epochs}\n"
+			f"\tMinPhases={min_phases_before_stopping} (only for progressive finetuning)\n"
+			f"\tVolatilityThreshold={volatility_threshold}\n"
+			f"\tSlopeThreshold={slope_threshold}\n"
+			f"\tPairwiseImpThreshold={pairwise_imp_threshold}\n"
+			f"\tRestoreBestWeights={restore_best_weights}"
+		)
+		self.reset()
+		print("="*100)
+
+	def reset(self):
+		print(">> Resetting EarlyStopping state, Essential for starting fresh or resetting between training phases")
+		self.best_score = None
+		self.best_weights = None
+		self.counter = 0
+		self.stopped_epoch = 0
+		self.best_epoch = 0
+		self.value_history = []
+		self.improvement_history = []
+		self.current_phase = 0
+		self.model_improved_this_epoch = False
+
+	def compute_volatility(self, window: List[float]) -> float:
+		if not window or len(window) < 2:
+			return 0.0
+		mean_val = np.mean(window)
+		std_val = np.std(window)
+		return (std_val / abs(mean_val)) * 100 if mean_val != 0 else 0.0
+
+	def is_improvement(self, current_value: float) -> bool:
+		if self.best_score is None:
+			return True
+		improvement = (self.best_score - current_value) * self.sign
+		return improvement > self.min_delta
+
+	def should_stop(
+			self,
+			current_value: float,
+			model: torch.nn.Module,
+			optimizer: torch.optim.Optimizer,
+			scheduler,
+			epoch: int,
+			checkpoint_path: str,
+			current_phase: Optional[int] = None,
+		) -> bool:
+
+		self.model_improved_this_epoch = False
+		self.value_history.append(current_value)
+		phase_info = f", Phase {current_phase}" if current_phase is not None else ""
+		print(f"\n--- EarlyStopping Check (Epoch {epoch+1}{phase_info}) ---")
+		print(f"Current validation loss: {current_value}")
+
+		if epoch < self.min_epochs:
+			print(f"Skipping early stopping (epoch {epoch+1} <= min_epochs {self.min_epochs})")
+			return False
+
+		if self.is_improvement(current_value):
+			print(
+				f"\t>>>> New Best Model Found! "
+				f"Loss improved from {self.best_score if self.best_score is not None else 'N/A'} to {current_value}"
+			)
+			self.best_score = current_value
+			self.best_epoch = epoch
+			self.counter = 0
+			self.improvement_history.append(True)
+			self.model_improved_this_epoch = True
+
+			if self.restore_best_weights:
+				self.best_weights = {k: v.clone().cpu().detach() for k, v in model.state_dict().items()}
+			
+			print(f"Saving new best model checkpoint (from epoch {self.best_epoch + 1}) to {checkpoint_path}")
+			checkpoint = {
+				"epoch": self.best_epoch,
+				"model_state_dict": self.best_weights if self.best_weights is not None else model.state_dict(),
+				"optimizer_state_dict": optimizer.state_dict(),
+				"scheduler_state_dict": scheduler.state_dict(),
+				"best_val_loss": self.best_score,
+			}
+			if current_phase is not None:
+				checkpoint["phase"] = current_phase
+			try:
+				torch.save(checkpoint, checkpoint_path)
+			except Exception as e:
+				print(f"Warning: Failed to save checkpoint to {checkpoint_path}: {e}")
+		else:
+			self.counter += 1
+			self.improvement_history.append(False)
+			print(
+				f"\tNO improvement! Best: {self.best_score} "
+				f"Patience: {self.counter}/{self.patience}"
+			)
+
+		if len(self.value_history) < self.window_size:
+			print(f"\tNot enough history ({len(self.value_history)} < {self.window_size}) for window-based checks.")
+			if self.counter >= self.patience:
+				phase_constraint_met = (current_phase is None) or (current_phase >= self.min_phases_before_stopping)
+				if phase_constraint_met:
+					print(f"EARLY STOPPING TRIGGERED: Patience ({self.counter}/{self.patience}) exceeded.")
+					return True
+			return False
+
+		last_window = self.value_history[-self.window_size:]
+		print(f"\tWindow ({self.window_size} epochs): {last_window}")
+
+		slope = compute_slope(window=last_window)
+		print(f"\tSlope over {self.window_size} windows: {slope} (Threshold > {self.slope_threshold})")
+		
+		volatility = self.compute_volatility(last_window)
+		print(f"\tVolatility over {self.window_size} windows: {volatility:.2f}% (Threshold >= {self.volatility_threshold}%)")
+		
+		pairwise_diffs = [(last_window[i] - last_window[i+1]) * self.sign for i in range(len(last_window)-1)]
+		pairwise_imp_avg = np.mean(pairwise_diffs) if pairwise_diffs else 0.0
+		print(f"\tAvg Pairwise Improvement: {pairwise_imp_avg} (Threshold < {self.pairwise_imp_threshold})")
+		
+		close_to_best = abs(current_value - self.best_score) < self.min_delta if self.best_score is not None else False
+		print(f"\tClose to best score ({self.best_score}): {close_to_best}")
+		
+		window_start_value = self.value_history[-self.window_size]
+		window_end_value = self.value_history[-1]
+		cumulative_improvement_signed = (window_start_value - window_end_value) * self.sign
+		cumulative_improvement_abs = abs(cumulative_improvement_signed)
+		print(f"\tCumulative Improvement: {cumulative_improvement_signed} (Threshold < {self.cumulative_delta})")
+		
+		stop_reason = []
+		if self.counter >= self.patience:
+			stop_reason.append(f"Patience ({self.counter}/{self.patience})")
+		if volatility >= self.volatility_threshold:
+			stop_reason.append(f"High volatility ({volatility:.2f}%)")
+		is_worsening = (self.mode == 'min' and slope > self.slope_threshold) or \
+						 (self.mode == 'max' and slope < self.slope_threshold)
+		if is_worsening:
+			stop_reason.append(f"Worsening slope ({slope:.5f})")
+		if pairwise_imp_avg < self.pairwise_imp_threshold and not close_to_best:
+			stop_reason.append(f"Low pairwise improvement ({pairwise_imp_avg:.5f}) & not close to best")
+		if cumulative_improvement_abs < self.cumulative_delta:
+			stop_reason.append(f"Low cumulative improvement ({cumulative_improvement_abs:.5f})")
+
+		should_trigger_stop = bool(stop_reason)
+		should_really_stop = False
+
+		if should_trigger_stop:
+			reason_str = ', '.join(stop_reason)
+			phase_constraint_met = (current_phase is None) or (current_phase >= self.min_phases_before_stopping)
+			if phase_constraint_met:
+				print(f"<!> EARLY STOPPING TRIGGERED:\n\t{reason_str}")
+				should_really_stop = True
+			else:
+				print(f"\tEarly stopping condition triggered ({reason_str}), but delaying stop (Phase {current_phase} < {self.min_phases_before_stopping})")
+		else:
+			print("\tNo stopping conditions met.")
+
+		if should_really_stop and self.restore_best_weights:
+			if self.best_weights is not None:
+				target_device = next(model.parameters()).device
+				print(f"Restoring model weights from best epoch {self.best_epoch + 1} (score: {self.best_score})")
+				model.load_state_dict({k: v.to(target_device) for k, v in self.best_weights.items()})
+			else:
+				print("Warning: restore_best_weights is True, but no best weights were saved.")
+		
+		return should_really_stop
+
+	def get_status(self) -> Dict[str, Any]:
+		status = {
+			"best_score": self.best_score,
+			"best_epoch": self.best_epoch + 1 if self.best_score is not None else 0,
+			f"patience_counter(out of {self.patience})": self.counter,
+			"value_history_len": len(self.value_history)
+		}
+		if len(self.value_history) >= self.window_size:
+			last_window = self.value_history[-self.window_size:]
+			status["volatility_window"] = self.compute_volatility(last_window)
+			status["slope_window"] = compute_slope(window=last_window)
+		else:
+			status["volatility_window"] = None
+			status["slope_window"] = None
+		return status
+
+	def get_best_score(self) -> Optional[float]:
+		return self.best_score
+
+	def get_best_epoch(self) -> int:
+		return self.best_epoch
+
+def should_transition_to_next_phase_complex(
+		current_phase: int,
+		losses: List[float],
+		window: int,
+		best_loss: Optional[float],
+		best_loss_threshold: float,
+		volatility_threshold: float,
+		slope_threshold: float,
+		pairwise_imp_threshold: float,
+		accuracies: Optional[List[float]]=None, # Added optional accuracy list
+		accuracy_plateau_threshold: float = 1e-3 # Threshold for accuracy stagnation
+	) -> bool:
+
+	print(f"Phase Transition Check over {window} windows @ Phase: {current_phase}".center(120, "-"))
+
+	if len(losses) < window:
+		print(f"<!> Insufficient loss data ({len(losses)} < {window}) for phase transition.")
+		return False
+
+	# --- Loss Analysis ---
+	# Coefficient of Variation = (Standard Deviation / |Mean|) * 100
+	last_window_losses = losses[-window:]
+	current_loss = last_window_losses[-1]
+	mean_loss = np.mean(last_window_losses)
+	std_loss = np.std(last_window_losses)
+	loss_volatility = (std_loss / abs(mean_loss)) * 100 if mean_loss != 0 else 0.0
+
+	# Calculate Average Pairwise Loss Improvement:
+	#    - Computes the difference between each adjacent epoch's loss within the window.
+	#    - `loss[i] - loss[i+1]` means a positive value indicates loss DECREASED (improvement).
+	loss_pairwise_diffs = [last_window_losses[i] - last_window_losses[i+1] for i in range(len(last_window_losses)-1)]
+	#    - Average these differences to get the typical improvement per step in the window.
+	loss_pairwise_imp_avg = np.mean(loss_pairwise_diffs) if loss_pairwise_diffs else 0.0
+
+	# Calculate Loss Slope:
+	#    - Fits a line to the losses in the window and gets the slope.
+	#    - Positive slope means loss is generally increasing (worsening).
+	#    - Negative slope means loss is generally decreasing (improving).
+	loss_slope = compute_slope(window=last_window_losses) # Use global function
+
+	# Check Closeness to Best Loss:
+	#    - Determines if the current loss is already very near the absolute best loss ever recorded.
+	#    - Handles the case where best_loss might still be None (early in training).
+	close_to_best = best_loss is not None and abs(current_loss - best_loss) < best_loss_threshold
+
+	print(f"Loss Window: {last_window_losses}")
+	print(
+		f"Current Loss: {current_loss} | "
+		f"Best Loss: {best_loss if best_loss is not None else 'N/A'} | "
+		f"Close[{current_loss} - {best_loss} < {best_loss_threshold}] ? {close_to_best}"
+	)
+	print(f"Loss Volatility: {loss_volatility:.2f}% (Threshold: >= {volatility_threshold}%)")
+	print(f"Loss Slope: {loss_slope} (Thresh: > {slope_threshold}) [Positive: worsening, Negative: improving]")
+	print(f"Avg Pairwise Loss Improvement: {loss_pairwise_imp_avg} (Thresh: < {pairwise_imp_threshold})")
+
+	# --- Accuracy Analysis (Optional) ---
+	accuracy_plateau = False
+	if accuracies is not None:
+		if len(accuracies) >= window:
+			last_window_acc = accuracies[-window:]
+			# Calculate Average Pairwise Accuracy Improvement:
+			#     - `acc[i+1] - acc[i]` means a positive value indicates accuracy INCREASED (improvement).
+			acc_pairwise_diffs = [last_window_acc[i+1] - last_window_acc[i] for i in range(len(last_window_acc)-1)]
+			acc_pairwise_imp_avg = np.mean(acc_pairwise_diffs) if acc_pairwise_diffs else 0.0
+			# Determine Accuracy Plateau: If the average improvement is below the threshold, accuracy has likely stalled.
+			accuracy_plateau = acc_pairwise_imp_avg < accuracy_plateau_threshold
+			print(f"Accuracy Window: {last_window_acc}")
+			print(f"Avg Pairwise Acc Improvement: {acc_pairwise_imp_avg:.5f} (Plateau Thresh: < {accuracy_plateau_threshold}) => Plateau: {accuracy_plateau}")
+		else:
+			print(f"<!> Insufficient accuracy data ({len(accuracies)} < {window}) for plateau check.")
+	# else:
+	# 	print("Accuracy data not provided, skipping accuracy plateau check.")
+
+	transition = False
+	reasons = []
+
+	# Reason 1: Loss is highly volatile (unstable)
+	if loss_volatility >= volatility_threshold:
+		transition = True
+		reasons.append(f"High loss volatility ({loss_volatility:.2f}%)")
+
+	# Reason 2: Loss trend is worsening (slope > threshold)
+	if loss_slope > slope_threshold:
+		transition = True
+		reasons.append(f"Worsening loss slope ({loss_slope})")
+
+	# Reason 3: Loss improvement has stagnated AND not close to best
+	if loss_pairwise_imp_avg < pairwise_imp_threshold and not close_to_best:
+		transition = True
+		reasons.append(f"<!> Low loss improvement: {loss_pairwise_imp_avg} < {pairwise_imp_threshold} & not close to best")
+
+	# Reason 4: Accuracy has plateaued (if available)
+	if accuracy_plateau:
+		transition = True
+		reasons.append("Accuracy plateau detected")
+
+	if transition:
+		print(f"\n==>> PHASE TRANSITION RECOMMENDED from Phase: {current_phase}:\n\t{', '.join(reasons)}\n")
+	else:
+		print(f"==>> No phase transition required: Stable progress or close to best.\n\tContinue with current phase: {current_phase}.")
+
+	return transition
+
+def handle_phase_transition_complex(
+		current_phase: int,
+		initial_lr: float,
+		initial_wd: float,
+		max_phases: int,
+		current_loss: float,
+		best_loss: Optional[float],
+    last_lr: float, # Pass the LR from the previous phase
+    last_wd: float, # Pass the WD from the previous phase
+	) -> Tuple[int, float, float]:
+
+	# --- 1. Determine Next Phase and Progress ---
+	next_phase = current_phase + 1
+	# Phase progress as a value from 0.0 (start) to 1.0 (final phase)
+	phase_progress = next_phase / max(1, max_phases - 1)
+
+	# --- 2. Calculate Loss Stability Factor ( punish instability) ---
+	if best_loss is None or best_loss <= 0:
+		loss_stability_factor = 1.0 # Neutral at the very start
+	else:
+		# If current loss is worse than best, this factor will be > 1.0
+		# We will use its inverse to penalize the LR.
+		# Clamped for safety.
+		loss_ratio = current_loss / best_loss
+		loss_stability_factor = 1 / max(1.0, min(loss_ratio, 3.0)) # Penalizes if loss is up to 3x worse
+
+	# --- 3. Calculate New Learning Rate (Compounding Decay) ---
+	# We decay the LEARNING RATE based on how far we are into the training.
+	# Early phases have small decay, later phases have aggressive decay.
+	# This is a smoother version of the 0.75**progress logic.
+	lr_decay_factor = 1.0 - (phase_progress * 0.25) # Max decay of 25% per phase
+	
+	# The new base LR is the *previous* LR decayed by our factors.
+	# This creates a compounding effect, essential for late-stage fine-tuning.
+	new_lr = last_lr * lr_decay_factor * loss_stability_factor
+	
+	# Safety net: ensure LR doesn't collapse to zero.
+	min_lr_dec = 1e-3
+	min_allowable_lr = initial_lr * min_lr_dec
+	new_lr = max(new_lr, min_allowable_lr)
+
+	# --- 4. Calculate New Weight Decay (Compounding Increase) ---
+	# We increase WEIGHT DECAY based on phase progress.
+	# Early phases get a small bump, later phases get a large one.
+	wd_increase_factor = 1.0 + (phase_progress * 0.4) # Max increase of 40% per phase
+	new_wd = last_wd * wd_increase_factor
+
+	# Safety net: cap the total weight decay.
+	max_wd_inc = 10.0
+	max_allowable_wd = initial_wd * max_wd_inc # Don't let it exceed 10x the initial value
+	new_wd = min(new_wd, max_allowable_wd)
+
+	print("="*100)
+	print(f"PHASE TRANSITION: {current_phase} -> {next_phase} (Progress: {phase_progress})")
+	print("-"*100)
+	print("[Learning Rate Calculation]")
+	print(f"  - Previous LR: {last_lr}")
+	print(f"  - Loss Stability Factor (1 / (current/best)): {loss_stability_factor}  (penalizes instability)")
+	print(f"  - Phase Decay Factor (1 - progress*0.25): {lr_decay_factor}")
+	print(f"  - New Calculated LR: {new_lr} (Min allowed: {min_allowable_lr})")
+	print("-"*100)
+	print("[Weight Decay Calculation]")
+	print(f"  - Previous WD: {last_wd}")
+	print(f"  - Phase Increase Factor (1 + progress*0.4): {wd_increase_factor}")
+	print(f"  - New Calculated WD: {new_wd} (Max allowed: {max_allowable_wd})")
+	print("="*100)
+
+	return next_phase, new_lr, new_wd
+
+
+def compute_ap(
+		i: int, 
+		correct_mask: torch.Tensor, 
+		query_labels: torch.Tensor, 
+		class_counts: Optional[torch.Tensor], 
+		mode: str, 
+		K: int,
+	) -> float:
+	correct = correct_mask[i]
+	if correct.any():
+		relevant_positions = torch.where(correct)[0]
+		precisions = []
+		cumulative_correct = 0
+		for pos in relevant_positions:
+			cumulative_correct += 1
+			precision_at_pos = cumulative_correct / (pos.item() + 1)
+			precisions.append(precision_at_pos)
+		if mode == "Image-to-Text":
+			R = 1
+		else:
+			R = class_counts[query_labels[i]].item()
+		if R > 0:
+			return sum(precisions) / min(R, K)
+	return 0.0
+
+def handle_phase_transition_old(
+		current_phase: int,
+		initial_lr: float,
+		initial_wd: float,
+		max_phases: int,
+		window_size: int,
+		current_loss: float,
+		best_loss: Optional[float],
+	) -> Tuple[int, float, float]:
+
+	# --- 1. Calculate Loss Stability Factor ---
+	if best_loss is None or best_loss <= 0:
+		loss_stability_factor = 1.0
+	else:
+		loss_stability_factor = min(max(0.5, current_loss / best_loss), 2.0)
+
+	# --- 2. Calculate Window Factor ---
+	window_factor = max(0.5, min(1.5, 10 / window_size))
+
+	# --- 3. Determine Next Phase Index and Phase Factor ---
+	next_phase = current_phase + 1
+	if next_phase >= max_phases:
+		next_phase = max_phases - 1
+		phase_factor = 0.1
+		print(f"<!> Already in final phase ({current_phase}). Applying fixed LR reduction.")
+	else:
+		phase_progress = next_phase / max(1, max_phases - 1)
+		phase_factor = 0.75 ** phase_progress
+
+	# --- 4. Calculate New Learning Rate ---
+	new_lr = initial_lr * phase_factor * loss_stability_factor * window_factor
+	min_allowable_lr = initial_lr * 1e-3
+	new_lr = max(new_lr, min_allowable_lr)
+
+	# --- 5. Calculate New Weight Decay with Dynamic Max Factor ---
+	wd_phase_progress = min(1.0, next_phase / max(1, max_phases - 1))
+
+	# Dynamically determine max_wd_increase_factor based on context
+	max_wd_increase_factor = 1.0 + (wd_phase_progress * 1.5) + ((1 - loss_stability_factor) * 1.0)
+
+	# Calculate the total possible increase range
+	wd_increase_range = initial_wd * (max_wd_increase_factor - 1.0)
+
+	# new weight decay with step-like decreases [linear progression]
+	new_wd = initial_wd + (wd_increase_range * wd_phase_progress)
+
+	# Add a maximum cap (which is now redundant but kept for clarity)
+	max_allowable_wd = initial_wd * max_wd_increase_factor
+	new_wd = min(new_wd, max_allowable_wd)
+
+	print("="*100)
+	print(f"Phase Transition Occurred to Phase: {next_phase} from Previous Phase: {current_phase})")
+	print(f"Factors -> Loss Stability: {loss_stability_factor}, Window Factor: {window_factor}, Phase Factor: {phase_factor}")
+	print(f"=>\tNew LR: {new_lr} (min allowable: {min_allowable_lr})")
+	print(f"WD Factors -> Phase Progress: {wd_phase_progress}, Dynamic Max Increase Factor: {max_wd_increase_factor}")
+	print(f"=>\tNew WD: {new_wd} (initial: {initial_wd})")
+	print("="*100)
+
+	return next_phase, new_lr, new_wd
+
+class HistoricalArchivesMultiLabelDataset(Dataset):
+	def __init__(
+		self,
+		dataset_name: str,
+		train: bool,
+		data_frame: pd.DataFrame,
+		transform,
+		memory_threshold_gib: float = 500.0,
+		label_dict: dict = None,
+		text_augmentation: bool = True
+	):
+		self.dataset_name = dataset_name
+		self.train = train
+		self.data_frame = data_frame
+		self.images = self.data_frame["img_path"].values
+		self.labels = self.data_frame["multimodal_labels"].values
+		self.label_dict = label_dict
+		self._num_classes = len(label_dict) if label_dict else 0
+		self.transform = transform
+		self.text_augmentation = text_augmentation
+		
+		# Initialize caches
+		self.image_cache = None
+		self.text_cache = [None] * len(self.data_frame)
+		
+		# Preload if memory allows
+		available_memory_gib = psutil.virtual_memory().available / (1024 ** 3)
+		if available_memory_gib >= memory_threshold_gib:
+			print(f"Available memory ({available_memory_gib:.2f} GiB) exceeds threshold. Preloading...")
+			self.image_cache = self._preload_images()
+			self._preload_texts()  # Cache tokenized texts
+	
+	@property
+	def unique_labels(self):
+		"""Return sorted list of all possible class names"""
+		return sorted(self.label_dict.keys()) if self.label_dict else []
+	
+	def _preload_images(self):
+		print(f"Preloading images for {self.dataset_name}...")
+		cache = []
+		for img_path in tqdm(self.images, desc="Loading images"):
+			try:
+				img = Image.open(img_path).convert("RGB")
+				cache.append(img)
+			except Exception as e:
+				print(f"ERROR: {img_path}\t{e}")
+				cache.append(None)
+		print(f"Preloaded {sum(1 for img in cache if img is not None)}/{len(cache)} images")
+		return cache
+	
+	def _preload_texts(self):
+		print(f"Preprocessing texts for {self.dataset_name}...")
+		for idx in tqdm(range(len(self.labels)), desc="Tokenizing texts"):
+			self.text_cache[idx] = self._tokenize_labels(self.labels[idx])
+	
+	def _tokenize_labels(self, labels_str):
+		try:
+			labels = ast.literal_eval(labels_str)
+			text_desc = self._create_text_description(labels)
+			return clip.tokenize(text_desc).squeeze(0)
+		except (ValueError, SyntaxError):
+			return clip.tokenize("").squeeze(0)
+	
+	def _create_text_description(self, labels):
+		"""Convert list of labels to natural language string"""
+		if not labels:
+			return ""
+				
+		if not self.text_augmentation:
+			return " ".join(labels)
+				
+		if len(labels) == 1:
+			return labels[0]
+		elif len(labels) == 2:
+			return f"{labels[0]} and {labels[1]}"
+		else:
+			return ", ".join(labels[:-1]) + f", and {labels[-1]}"
+	
+	def _get_label_vector(self, labels_str):
+		"""Convert label string to multi-hot vector"""
+		try:
+			labels = ast.literal_eval(labels_str)
+			vector = torch.zeros(self._num_classes, dtype=torch.float32)
+			for label in labels:
+				if label in self.label_dict:
+					vector[self.label_dict[label]] = 1.0
+			return vector
+		except (ValueError, SyntaxError):
+			return torch.zeros(self._num_classes, dtype=torch.float32)
+	
+	def __len__(self):
+		return len(self.data_frame)
+	
+	def __repr__(self):
+		transform_str = f"Transform: {self.transform}\n" if self.transform else ""
+		split = 'Train' if self.train else 'Validation'
+		cache_status = []
+		if self.image_cache: cache_status.append("Images")
+		if any(self.text_cache): cache_status.append("Texts")
+		cache_str = "Preloaded: " + ", ".join(cache_status) if cache_status else "Not preloaded"
+		
+		return (
+			f"{self.dataset_name}\n"
+			f"\tSplit: {split} {self.data_frame.shape}\n"
+			f"\tColumns: {list(self.data_frame.columns)}\n"
+			f"\tNum classes: {self._num_classes}\n"
+			f"\tCache: {cache_str}\n"
+			f"{transform_str}"
+		)
+
+	def __getitem__(self, idx):
+		if self.image_cache is not None:
+			image = self.image_cache[idx]
+			if image is None:
+				raise ValueError(f"Failed to load image at index {idx}")
+		else:
+			try:
+				image = Image.open(self.images[idx]).convert("RGB")
+			except Exception as e:
+				print(f"ERROR: {self.images[idx]}\t{e}")
+				raise
+		if self.text_cache[idx] is None:
+			self.text_cache[idx] = self._tokenize_labels(self.labels[idx])
+		tokenized_text = self.text_cache[idx]
+		label_vector = self._get_label_vector(self.labels[idx])
+		image_tensor = self.transform(image)
+		return image_tensor, tokenized_text, label_vector
+
+def get_single_label_head_torso_tail_samples_old(
+		metadata_path, 
+		metadata_train_path, 
+		metadata_val_path, 
+		num_samples_per_segment=5,
+		head_threshold = 5000,  # Labels with frequency > 5000
+		tail_threshold = 1000,  # Labels with frequency < 1000
+		save_path="head_torso_tail_grid.png"
+	):
+	print(f"Analyzing Label Distribution from {metadata_path}")
+
+	# 1. Load DataFrames
+	try:
+		df_full = pd.read_csv(metadata_path)
+		df_train = pd.read_csv(metadata_train_path)
+		df_val = pd.read_csv(metadata_val_path)
+	except FileNotFoundError as e:
+		print(f"Error loading metadata files: {e}")
+		return None, None
+
+	# Use the 'label' column for string labels as used in plotting and potentially queries
+	# Use 'label_int' for analysis requiring unique integer counts if necessary,
+	# but counts based on string labels from the full dataset match Figure 2.
+
+	# 2. In-depth Analysis of Head/Torso/Tail
+	label_counts_full = df_full['label'].value_counts()
+	total_unique_labels_full = len(label_counts_full)
+	print(f"Total unique labels in full dataset: {total_unique_labels_full}")
+	print(f"Label Counts (full dataset): \n{label_counts_full.head(10)}")
+	print("...")
+	print(f"{label_counts_full.tail(10)}")
+
+	head_labels = label_counts_full[label_counts_full > head_threshold].index.tolist()
+	tail_labels = label_counts_full[label_counts_full < tail_threshold].index.tolist()
+	torso_labels = label_counts_full[(label_counts_full >= tail_threshold) & (label_counts_full <= head_threshold)].index.tolist()
+	print(f"\n--- Distribution Segments (based on full dataset frequency > {head_threshold} (Head), < {tail_threshold} (Tail)) ---")
+	print(f"Head Segment ({len(head_labels)} labels): {head_labels[:min(10, len(head_labels))]}...")
+	print(f"Torso Segment ({len(torso_labels)} labels): {torso_labels[:min(10, len(torso_labels))]}...")
+	print(f"Tail Segment ({len(tail_labels)} labels): {tail_labels[:min(10, len(tail_labels))]}...")
+
+	# 3. Select Samples from Validation Set
+	print(f"\n--- Selecting {num_samples_per_segment} Samples from Validation Set for Each Segment ---")
+	i2t_queries = []
+	t2i_queries = []
+	# Get labels actually present in the validation set
+	labels_in_val = df_val['label'].unique().tolist()
+	# Filter segment labels to include only those present in validation for sampling
+	head_labels_in_val = [lbl for lbl in head_labels if lbl in labels_in_val]
+	torso_labels_in_val = [lbl for lbl in torso_labels if lbl in labels_in_val]
+	tail_labels_in_val = [lbl for lbl in tail_labels if lbl in labels_in_val]
+
+	print(f"Head labels available in validation: {len(head_labels_in_val)}")
+	print(f"Torso labels available in validation: {len(torso_labels_in_val)}")
+	print(f"Tail labels available in validation: {len(tail_labels_in_val)}")
+	
+	# Check if enough labels/samples exist for sampling
+	if (
+		len(head_labels_in_val) < num_samples_per_segment 
+		or len(torso_labels_in_val) < num_samples_per_segment
+		or len(tail_labels_in_val) < num_samples_per_segment
+	):
+		print("\nWarning: Not enough unique labels available in validation for one or more segments to select the requested number of samples.")
+		# Adjust sampling if not enough labels, but we still need to try to get *some*
+		# We'll sample up to the number of available labels/samples
+	
+	segments = {
+		'Head': head_labels_in_val, 
+		'Torso': torso_labels_in_val, 
+		'Tail': tail_labels_in_val
+	}
+
+	# Sample for I2T (Query Image -> Text Labels)
+	print("\n--- I2T Query Samples (Image Path + GT Label) ---")
+	for segment_name, segment_labels in segments.items():
+		if not segment_labels:
+			print(f"No {segment_name} labels in validation set. Skipping I2T sampling for this segment.")
+			continue
+		# Sample *labels* from the segment that are in the validation set
+		labels_to_sample_from = random.sample(segment_labels, min(num_samples_per_segment, len(segment_labels)))
+		print(f"\nSelected {min(num_samples_per_segment, len(segment_labels))} {segment_name} labels for I2T image sampling:")
+		for label in labels_to_sample_from:
+			# Get all images with this label in the validation set
+			images_for_label = df_val[df_val['label'] == label]['img_path'].tolist()
+			if images_for_label:
+				# Sample one image path for this label
+				sampled_img_path = random.choice(images_for_label)
+				i2t_queries.append({'image_path': sampled_img_path, 'label': label, 'segment': segment_name})
+				print(f"- Label: '{label}' ({len(images_for_label)} samples in val) -> Image: {sampled_img_path}")
+			else:
+				print(f"- Warning: No images found for label '{label}' in the validation set for I2T query.")
+
+	# Sample for T2I (Query Label -> Images)
+	print("\n--- T2I Query Samples (Label String) ---")
+	for segment_name, segment_labels in segments.items():
+		if not segment_labels:
+			print(f"No {segment_name} labels in validation set. Skipping T2I sampling for this segment.")
+			continue
+		# Sample *label strings* from the segment that are in the validation set
+		labels_to_sample = random.sample(segment_labels, min(num_samples_per_segment, len(segment_labels)))
+		print(f"\nSelected {min(num_samples_per_segment, len(segment_labels))} {segment_name} labels for T2I query:")
+		for label in labels_to_sample:
+			# Check if the label actually exists in the validation set (should be true if sampled from segment_labels_in_val)
+			# And ideally, check if there's at least one image for it in the validation set
+			if label in df_val['label'].values:
+				images_for_label = df_val[df_val['label'] == label]['img_path'].tolist()
+				if images_for_label:
+					t2i_queries.append({'label': label, 'segment': segment_name})
+					print(f"- Label: '{label}' ({len(images_for_label)} samples in val)")
+				else:
+					print(f"- Warning: Label '{label}' found in val labels, but no images. Skipping T2I query.")
+			else:
+				print(f"- Warning: Label '{label}' not found in validation set for T2I query. Skipping.") # Should not happen with segment_labels_in_val
+
+	return i2t_queries, t2i_queries
+
+def get_single_label_head_torso_tail_samples_old_composite(
+    metadata_path,
+    metadata_train_path,
+    metadata_val_path,
+    num_samples_per_segment=5,
+    head_threshold=5000,  # Labels with frequency > 5000
+    tail_threshold=1000,  # Labels with frequency < 1000
+    save_path="head_torso_tail_grid.png",
+    tile_img_h=256,  # Image area height per tile (excl. title text)
+    tile_w=256,  # Tile width (fixed so columns align perfectly)
+    title_h=26,  # Text area height at top of each tile ("GT: ...")
+    left_gutter=70,  # Gutter for rotated row labels
+    bg_color="white"
+):
+    print(f"Analyzing Label Distribution from {metadata_path}")
+    # 1) Load metadata
+    try:
+        df_full = pd.read_csv(metadata_path)
+        _ = pd.read_csv(metadata_train_path)  # Not used here, but kept for parity
+        df_val = pd.read_csv(metadata_val_path)
+    except FileNotFoundError as e:
+        print(f"Error loading metadata files: {e}")
+        return None, None
+    
+    # 2) Head / Torso / Tail segmentation from full dataset
+    label_counts_full = df_full['label'].value_counts()
+    head_labels = label_counts_full[label_counts_full > head_threshold].index.tolist()
+    tail_labels = label_counts_full[label_counts_full < tail_threshold].index.tolist()
+    torso_labels = label_counts_full[(label_counts_full >= tail_threshold) & (label_counts_full <= head_threshold)].index.tolist()
+    # Restrict to labels present in validation set
+    labels_in_val = set(df_val['label'].unique().tolist())
+    segments = {
+        "Head": [lbl for lbl in head_labels if lbl in labels_in_val],
+        "Torso": [lbl for lbl in torso_labels if lbl in labels_in_val],
+        "Tail": [lbl for lbl in tail_labels if lbl in labels_in_val],
+    }
+    
+    # 3) Sample up to 3 examples per segment for the grid
+    # We’ll pick one image path per chosen label (if available)
+    i2t_queries = {seg: [] for seg in segments}
+    for segment_name, segment_labels in segments.items():
+        if not segment_labels:
+            continue
+        labels_to_sample = random.sample(segment_labels, min(3, len(segment_labels)))
+        for label in labels_to_sample:
+            imgs = df_val[df_val['label'] == label]['img_path'].tolist()
+            if imgs:
+                i2t_queries[segment_name].append({"image_path": random.choice(imgs), "label": label})
+    
+    # 4) Build composite image with PIL (true zero spacing between tiles)
+    rows = ["Head", "Torso", "Tail"]
+    n_cols = 3
+    tile_h_total = title_h + tile_img_h
+    canvas_w = left_gutter + n_cols * tile_w
+    canvas_h = len(rows) * tile_h_total
+    composite = Image.new("RGB", (canvas_w, canvas_h), color=bg_color)
+    draw = ImageDraw.Draw(composite)
+    
+    # Try to pick decent fonts; fall back gracefully
+    def load_font(name, size):
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            try:
+                return ImageFont.truetype("DejaVuSans.ttf", size)
+            except Exception:
+                return ImageFont.load_default()
+    
+    title_font = load_font("DejaVuSansMono.ttf", 12)
+    row_font = load_font("DejaVuSans-Bold.ttf", 20)
+    segment_colors = {"Head": (214, 39, 40), "Torso": (44, 160, 44), "Tail": (31, 119, 180)}  # Red, Green, Blue-ish
+    
+    # Helper to paste one tile at exact position with no gaps
+    def paste_tile(img_path, label, x0, y0):
+        # Make a clean tile background
+        tile = Image.new("RGB", (tile_w, tile_h_total), color=bg_color)
+        td = ImageDraw.Draw(tile)
+        # Draw title text centered in title area
+        gt_text = f"GT: {label}"
+        if hasattr(title_font, "getbbox"):
+            tw, th = title_font.getbbox(gt_text)[2:]
+        else:
+            tw, th = title_font.getsize(gt_text)
+        td.text(((tile_w - tw) // 2, max(0, (title_h - th) // 2)), gt_text, fill=(0, 0, 0), font=title_font)
+        # Draw a subtle background for the title area
+        td.rectangle([(0, 0), (tile_w, title_h)], outline=(200, 200, 200), width=1)
+        # Load image, preserve aspect, fit inside tile_w x tile_img_h
+        # Fallback to blank if missing/corrupted
+        try:
+            if img_path and os.path.exists(img_path):
+                img = Image.open(img_path).convert("RGB")
+            else:
+                img = Image.new("RGB", (tile_w, tile_img_h), color=(230, 230, 230))
+        except Exception:
+            img = Image.new("RGB", (tile_w, tile_img_h), color=(230, 230, 230))
+        # Resize to fit within (tile_w, tile_img_h), keeping aspect ratio
+        scale = min(tile_w / img.width, tile_img_h / img.height) if img.width and img.height else 1.0
+        new_w = max(1, int(img.width * scale))
+        new_h = max(1, int(img.height * scale))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+        # Paste centered in the image area
+        x_img = (tile_w - new_w) // 2
+        y_img = title_h + (tile_img_h - new_h) // 2
+        tile.paste(img, (x_img, y_img))
+        # Paste tile onto composite at exact pixel location (no spacing)
+        composite.paste(tile, (x0, y0))
+    
+    # Paste grid tiles
+    for r, segment_name in enumerate(rows):
+        samples = i2t_queries.get(segment_name, [])
+        for c in range(n_cols):
+            x0 = left_gutter + c * tile_w
+            y0 = r * tile_h_total
+            if c < len(samples):
+                paste_tile(samples[c]["image_path"], samples[c]["label"], x0, y0)
+            else:
+                # Blank tile (still zero spacing, just empty white background)
+                blank = Image.new("RGB", (tile_w, tile_h_total), color=bg_color)
+                composite.paste(blank, (x0, y0))
+    
+    # Draw rotated row label centered vertically in this row, inside left gutter
+    for r, segment_name in enumerate(rows):
+        row_center_y = r * tile_h_total + tile_h_total // 2
+        text = segment_name
+        color = segment_colors[segment_name]
+        if hasattr(row_font, "getbbox"):
+            tw, th = row_font.getbbox(text)[2:]
+        else:
+            tw, th = row_font.getsize(text)
+        # Render rotated text on a small canvas, then paste centered in gutter
+        text_img = Image.new("RGBA", (th + 2, tw + 2), (255, 255, 255, 0))
+        td2 = ImageDraw.Draw(text_img)
+        td2.text((1, 1), text, fill=color + (255,), font=row_font)
+        text_rot = text_img.rotate(90, expand=1)
+        tx = (left_gutter - text_rot.width) // 2
+        ty = row_center_y - text_rot.height // 2
+        composite.paste(text_rot, (max(0, tx), max(0, ty)), text_rot)
+    
+    # Save the composite image
+    composite.save(save_path, dpi=(300, 300))
+    print(f"Saved 3x3 sample grid to: {save_path}")
+    
+    # Also return queries similar to before (now organized by segment)
+    # Flatten i2t for backward compatibility if needed
+    flat_i2t = []
+    for seg, lst in i2t_queries.items():
+        for it in lst:
+            flat_i2t.append({"image_path": it["image_path"], "label": it["label"], "segment": seg})
+    # t2i kept minimal (not used in plot)
+    t2i_queries = [{"label": it["label"], "segment": seg} for seg, lst in i2t_queries.items() for it in lst]
+    return flat_i2t, t2i_queries
+
+def get_single_label_head_torso_tail_samples_composite(
+    metadata_path, 
+    metadata_train_path, 
+    metadata_val_path, 
+    num_samples_per_segment=5,
+    head_threshold=5000,   # Labels with frequency > 5000
+    tail_threshold=1000,   # Labels with frequency < 1000
+    save_path="head_torso_tail_grid.png",
+    tile_img_h=256,        # image area height per tile (excl. title text)
+    tile_w=256,            # tile width (fixed so columns align perfectly)
+    title_h=26,            # text area height at top of each tile ("GT: ...")
+    left_gutter=70,        # gutter for rotated row labels
+    bg_color="white"
+):
+    print(f"Analyzing Label Distribution from {metadata_path}")
+
+    # 1) Load metadata
+    try:
+        df_full = pd.read_csv(metadata_path)
+        _ = pd.read_csv(metadata_train_path)  # not used here, but kept for parity
+        df_val = pd.read_csv(metadata_val_path)
+    except FileNotFoundError as e:
+        print(f"Error loading metadata files: {e}")
+        return None, None
+
+    # 2) Head / Torso / Tail segmentation from full dataset
+    label_counts_full = df_full['label'].value_counts()
+    head_labels  = label_counts_full[label_counts_full > head_threshold].index.tolist()
+    tail_labels  = label_counts_full[label_counts_full < tail_threshold].index.tolist()
+    torso_labels = label_counts_full[(label_counts_full >= tail_threshold) & (label_counts_full <= head_threshold)].index.tolist()
+
+    # Restrict to labels present in validation set
+    labels_in_val = set(df_val['label'].unique().tolist())
+    segments = {
+        "Head":  [lbl for lbl in head_labels  if lbl in labels_in_val],
+        "Torso": [lbl for lbl in torso_labels if lbl in labels_in_val],
+        "Tail":  [lbl for lbl in tail_labels  if lbl in labels_in_val],
+    }
+
+    # 3) Sample up to 3 examples per segment for the grid
+    #    We’ll pick one image path per chosen label (if available)
+    i2t_queries = {seg: [] for seg in segments}
+    for segment_name, segment_labels in segments.items():
+        if not segment_labels:
+            continue
+        labels_to_sample = random.sample(segment_labels, min(3, len(segment_labels)))
+        for label in labels_to_sample:
+            imgs = df_val[df_val['label'] == label]['img_path'].tolist()
+            if imgs:
+                i2t_queries[segment_name].append({"image_path": random.choice(imgs), "label": label})
+
+    # 4) Build composite image with PIL (true zero spacing between tiles)
+    rows = ["Head", "Torso", "Tail"]
+    n_cols = 3
+    tile_h_total = title_h + tile_img_h
+    canvas_w = left_gutter + n_cols * tile_w
+    canvas_h = len(rows) * tile_h_total
+
+    composite = Image.new("RGB", (canvas_w, canvas_h), color=bg_color)
+    draw = ImageDraw.Draw(composite)
+
+    # Try to pick decent fonts; fall back gracefully
+    def load_font(name, size):
+        try:
+            return ImageFont.truetype(name, size)
+        except Exception:
+            try:
+                return ImageFont.truetype("DejaVuSans.ttf", size)
+            except Exception:
+                return ImageFont.load_default()
+
+    title_font = load_font("DejaVuSansMono.ttf", 12)
+    row_font   = load_font("DejaVuSans-Bold.ttf", 20)
+
+    segment_colors = {"Head": (214, 39, 40), "Torso": (44, 160, 44), "Tail": (31, 119, 180)}  # red/green/blue-ish
+
+    # Helper to paste one tile at exact position with no gaps
+    def paste_tile(img_path, label, x0, y0):
+        # Make a clean tile background
+        tile = Image.new("RGB", (tile_w, tile_h_total), color=bg_color)
+        td = ImageDraw.Draw(tile)
+
+        # Draw title text centered in title area
+        gt_text = f"GT: {label}"
+        if hasattr(title_font, "getbbox"):
+            tw, th = title_font.getbbox(gt_text)[2:]
+        else:
+            tw, th = title_font.getsize(gt_text)
+        td.text(((tile_w - tw) // 2, max(0, (title_h - th) // 2)), gt_text, fill=(0, 0, 0), font=title_font)
+
+        # Load image, preserve aspect, fit inside tile_w x tile_img_h
+        # Fallback to blank if missing/corrupted
+        try:
+            if img_path and os.path.exists(img_path):
+                img = Image.open(img_path).convert("RGB")
+            else:
+                img = Image.new("RGB", (tile_w, tile_img_h), color=(230, 230, 230))
+        except Exception:
+            img = Image.new("RGB", (tile_w, tile_img_h), color=(230, 230, 230))
+
+        # Resize to fit within (tile_w, tile_img_h), keeping aspect ratio
+        scale = min(tile_w / img.width, tile_img_h / img.height) if img.width and img.height else 1.0
+        new_w = max(1, int(img.width * scale))
+        new_h = max(1, int(img.height * scale))
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        # Paste centered in the image area
+        x_img = (tile_w - new_w) // 2
+        y_img = title_h + (tile_img_h - new_h) // 2
+        tile.paste(img, (x_img, y_img))
+
+        # Paste tile onto composite at exact pixel location (no spacing)
+        composite.paste(tile, (x0, y0))
+
+    # Paste grid tiles
+    for r, segment_name in enumerate(rows):
+        samples = i2t_queries.get(segment_name, [])
+        for c in range(n_cols):
+            x0 = left_gutter + c * tile_w
+            y0 = r * tile_h_total
+            if c < len(samples):
+                paste_tile(samples[c]["image_path"], samples[c]["label"], x0, y0)
+            else:
+                # Blank tile (still zero spacing, just empty white background)
+                blank = Image.new("RGB", (tile_w, tile_h_total), color=bg_color)
+                composite.paste(blank, (x0, y0))
+
+        # Draw rotated row label centered vertically in this row, inside left gutter
+        row_center_y = r * tile_h_total + tile_h_total // 2
+        text = segment_name
+        color = segment_colors[segment_name]
+        if hasattr(row_font, "getbbox"):
+            tw, th = row_font.getbbox(text)[2:]
+        else:
+            tw, th = row_font.getsize(text)
+        # Render rotated text on a small canvas, then paste centered in gutter
+        text_img = Image.new("RGBA", (th + 2, tw + 2), (255, 255, 255, 0))
+        td2 = ImageDraw.Draw(text_img)
+        td2.text((1, 1), text, fill=color + (255,), font=row_font)
+        text_rot = text_img.rotate(90, expand=1)
+        tx = (left_gutter - text_rot.width) // 2
+        ty = row_center_y - text_rot.height // 2
+        composite.paste(text_rot, (max(0, tx), max(0, ty)), text_rot)
+
+    composite.save(save_path)
+    print(f"Saved 3x3 sample grid to: {save_path}")
+
+    # Also return queries similar to before (now organized by segment)
+    # Flatten i2t for backward compatibility if needed
+    flat_i2t = []
+    for seg, lst in i2t_queries.items():
+        for it in lst:
+            flat_i2t.append({"image_path": it["image_path"], "label": it["label"], "segment": seg})
+
+    # t2i kept minimal (not used in plot)
+    t2i_queries = [{"label": it["label"], "segment": seg} for seg, lst in i2t_queries.items() for it in lst]
+
+    return flat_i2t, t2i_queries
+
+
+
+
+
 @torch.no_grad()
 def get_validation_metrics_old(
 		model: torch.nn.Module,
