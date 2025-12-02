@@ -18,7 +18,6 @@ Alternatively, for the current session (less complete than a fresh login): sourc
 Verify:
 
 $ echo $PATH
-$ which conda
 $ which python
 
 Phase 2: Delete the Old CondaCSC Directory Content
@@ -26,15 +25,12 @@ Phase 2: Delete the Old CondaCSC Directory Content
 $ module purge
 $ module load tykky
 $ cd /projappl/project_2004072/
-$ ls -l CondaCSC # if already exists
-
-$ mv -v CondaCSC CondaCSC_OLD_$(date +%Y%m%d)
-# # Then, after confirming the new one works, you can delete CondaCSC_OLD_*
 
 Recreate the Empty Directory for the New Installation:
 We need an empty directory for Tykky to install into.
 
-$ mkdir -v CondaCSC
+$ rm -rfv CondaCSC packages.sh
+$ mkdir -v CondaCSC && ls -l
 
 Phase 3: Create the New Tykky Environment (Named CondaCSC)
 
@@ -43,13 +39,14 @@ This phase uses Tykky to build a fresh, clean environment.
 Prepare environment.yml and requirements.txt:
 
 Create environment.yml (e.g., in your home directory or /projappl/project_2004072/) with your desired Conda packages.
+
 $ vim environment.yml
 
 name: CondaCSC_env
 channels:
   - conda-forge
 dependencies:
-  - python=3.10
+  - python=3.12
 
 Create requirements.txt (in the same location) for pip packages.
 
@@ -64,7 +61,7 @@ $ vim ~/.bashrc
 export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 
 Save and exit: Esc => :wq!
-Log out of Puhti or Mahti and log back in (most reliable).
+Log out of Puhti or Mahti (cttl + d) and log back in (most reliable).
 
 Or source ~/.bashrc.
 
@@ -72,33 +69,43 @@ Verify:
 
 $ echo $PATH
 $ which pip
-$ which conda # This might still be a shell function, but should now operate in context of Tykky wrappers
 
 which python and pip should now point to locations inside /projappl/project_2004072/CondaCSC/bin/.
 $ cd /projappl/project_2004072/
-$ rm -rfv CondaCSC_OLD_*
 
 Test the New Environment:
 $ which python
-$ python --version
+$ python -V
 
 continue with package installation:
 $ module purge
 $ module load tykky
 $ cd /projappl/project_2004072
+
+# remove old packages.sh
+$ rm -rfv packages.sh
+
 $ vim packages.sh
-# modify packages.sh file: <<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>
-# Example:
-[alijanif@mahti-login11 project_2004072]$ cat packages.sh 
+# modify/add to packages.sh file: <<<<<<<<<<<<<<<<<<<<<<<>>>>>>>>>>>>>>>>>>>>>>>
 
 echo "Checking PATH and python/pip/conda"
-echo $PATH
-which python
-which pip
-which conda
+echo "PATH: $PATH"
+echo -n "python -> "; which python
+echo -n "pip -> "; which pip
+echo -n "conda -> "; which conda
 conda list --show-channel-urls
+
 pip cache info
 pip cache purge
+
+# Install the C++ toolchain INSIDE the Conda environment ---
+# This places a modern libstdc++.so.6 directly into the Conda environment's
+# `lib` directory. This solves the `GLIBCXX_3.4.32 not found` error at RUNTIME,
+# making the environment portable and removing the need for `module load gcc`
+# just to run a python script.
+echo "--- Installing Conda C++ toolchain (gxx) for runtime compatibility ---"
+conda install -c conda-forge --yes gxx_linux-64
+echo "---------------------------------------------------------------------"
 
 echo "Loading latest CUDA module for cluster: $SLURM_CLUSTER_NAME"
 if [ "$SLURM_CLUSTER_NAME" = "mahti" ]; then
@@ -115,14 +122,28 @@ which nvcc
 echo "Upgrading pip and setuptools"
 pip install --upgrade pip setuptools wheel
 
-echo "Installing packages"
+echo "Installing torch..."
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+pip install psutil packaging ninja
+
+# install flash-attn ALONE. If this fails, we want to know immediately.
+# --no-build-isolation to force it to use the recently installed PyTorch.
+echo "--- Compiling Flash Attention ---"
+# MEMORY LIMITATION
+# We limit the build to 1 job at a time to prevent "killed" (OOM) errors.
+export MAX_JOBS=1
+pip install flash-attn --no-build-isolation
+
+pip install fasttext --no-binary :all:
+pip install mediapipe lingua-language-detector
+
+echo "Installing other packages..."
+pip install transformers bitsandbytes accelerate umap-learn hdbscan kneed sentence-transformers keybert 
 pip install PyDrive2 google-api-python-client optree ftfy tabulate netCDF4 h5netcdf
-pip install python-swiftclient rasterio geopandas pipdeptree
+pip install python-swiftclient rasterio geopandas pipdeptree 
 pip install ipywidgets nbclassic jupyterlab
-pip install transformers triton flash-attn bitsandbytes accelerate umap-learn hdbscan kneed sentence-transformers keybert 
-pip install scikit-learn rake-nltk fuzzywuzzy rapidfuzz fasttext plotly gensim pyarrow scipy stanza nltk joblib pillow pydantic
-pip install numba dill matplotlib seaborn requests selenium beautifulsoup4 lxml html5lib pillow pyenchant pyspelling langdetect libvoikko
+pip install scikit-learn rake-nltk fuzzywuzzy rapidfuzz plotly gensim pyarrow scipy stanza nltk joblib pydantic pycocotools
+pip install numba dill matplotlib seaborn requests selenium beautifulsoup4 lxml html5lib pyenchant pyspelling langdetect libvoikko
 pip install wordcloud tenacity natsort scikit-image scikit-multilearn openpyxl csvkit certifi sentencepiece
 
 echo "Checking installed packages"
@@ -131,5 +152,5 @@ pipdeptree --reverse --packages torch
 pipdeptree --reverse --packages blis
 pipdeptree --reverse --packages transformers
 
-
+$ cat packages.sh
 $ conda-containerize update CondaCSC --post-install packages.sh

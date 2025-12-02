@@ -1,40 +1,50 @@
 from openai import OpenAI
 import pandas as pd
 from tqdm import tqdm
+
+# chatanywhere:
 # deepseek-r1, deepseek-v3, gpt-3.5-turbo, gpt-4o-mini, gpt-4o, gpt-4.1-mini, gpt-4.1-nano, gpt-4.1, gpt-5-mini, gpt-5-nano, gpt-5
+# chatanywhere_token = os.getenv("CHATANYWHERE_API_KEY")
+# client = OpenAI(
+# 	api_key=chatanywhere_token,  # Get this from the project's site
+# 	base_url="https://api.chatanywhere.tech/v1",
+# )
+
+# deepinfra:
 model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 # model = "google/gemma-3-27b-it"
 # model = "mistralai/Mistral-Nemo-Instruct-2407"
-base_url = 'https://api.chatanywhere.tech/v1'
-# client = OpenAI(
-# 	api_key='sk-7XLhcZIoNzEBNM7muHZ5bSU8CgK0ViTKWad6kfWCC8FjF9yP',  # Get this from the project's site
-# 	base_url=base_url,
-# )
+deepinfra_token = os.getenv("CHATANYWHERE_API_KEY")
 client = OpenAI(
-		api_key="8z11Uq1Fm1OMGhV4HpNkAKDkKWHdOZqJ",
-		base_url="https://api.deepinfra.com/v1/openai",
+	api_key=deepinfra_token,
+	base_url="https://api.deepinfra.com/v1/openai",
 )
 
 LLM_INSTRUCTION_TEMPLATE = """<s>[INST]
-Act as a meticulous historical archivist specializing in 20th century documentation.
-Given the description below, extract up to {k} most prominent, factual and distinct **KEYWORDS** that appear in the text.
+You function as a historical archivist whose expertise lies in the 20th century.
+Given the image caption below, extract no more than {k} highly prominent, factual and distinct **KEYWORDS** that convey the primary actions, objects, or occurrences.
 
-{description}
+{caption}
 
-**CRITICAL RULES**:
-- Extract **ONLY keywords that actually appear** in the description above.
-- Return **AT MOST {k} keywords** - fewer is acceptable if the description is short or lacks distinct concepts.
-- Return **ONLY** a clean, valid and parsable **Python LIST** with a maximum of {k} keywords.
-- **ABSOLUTELY NO** additional explanatory text, code blocks, terms containing numbers, comments, tags, thoughts, questions, or explanations before or after the **Python LIST**.
-- **STRICTLY EXCLUDE ALL TEMPORAL EXPRESSIONS**: No dates, times, time periods, seasons, months, days, years, decades, centuries, or any time-related phrases (e.g., "early evening", "morning", "20th century", "1950s", "weekend", "May 25th", "July 10").
-- **STRICTLY EXCLUDE** vague, generic, or historical keywords.
-- **STRICTLY EXCLUDE** special characters, stopwords, meaningless, repeating or synonym-duplicate keywords.
+STRICT RULES — follow exactly:
+- Return **ONLY** a clean, valid, and parsable **Python LIST** with **AT MOST {k} KEYWORDS** - fewer is expected if the text is either short or lacks distinct concepts.
+- Extract **ONLY** self-contained and grammatically complete phrases that actually appear in the text.
+- AVOID incomplete fragments that start or end with prepositions or conjunctions.
+- **PRIORITIZE MEANINGFUL PHRASES**: Opt for multi-word n-grams such as NOUN PHRASES and NAMED ENTITIES over single terms only if they convey a more distinct meaning.
+- **STRICTLY EXCLUDE NUMERICAL CONTENT** such as numerical values, measurements, units, or quantitative terms.
+- **STRICTLY EXCLUDE MEDIA DESCRIPTORS** such as generic photography, image, picture, or media terms.
+- **STRICTLY EXCLUDE TEMPORAL EXPRESSIONS** such as specific times, calendar dates, seasonal periods, or extended historical eras.
+- **ABSOLUTELY NO** synonymous, duplicate, identical or misspelled keywords.
+- **ABSOLUTELY NO** additional explanatory text, code blocks, comments, tags, thoughts, questions, or explanations before or after the **Python LIST**.
 - The parsable **Python LIST** must be the **VERY LAST THING** in your response.
 [/INST]
 """
+
 df = pd.read_csv(filepath_or_buffer="/home/farid/datasets/WW_DATASETs/SMU_1900-01-01_1970-12-31/metadata_multi_label.csv", on_bad_lines='skip', low_memory=False)
 
-description = "F 4 aircraft are shipped to Hammarnäset J 29. July 10, 1969."
+description = """
+Ju 88A-17. Ju 88A-17 MTO 1943/44. Junkers Ju 88.
+"""
 # descriptions = df['enriched_document_description'].tolist()
 
 if isinstance(description, str):
@@ -51,7 +61,7 @@ for i, description in tqdm(enumerate(descriptions), total=len(descriptions), des
 		},
 		{
 			'role': 'user',
-			'content': LLM_INSTRUCTION_TEMPLATE.format(k=5, description=description)
+			'content': LLM_INSTRUCTION_TEMPLATE.format(k=5, caption=description)
 		}
 	],
 	temperature=0.0,
