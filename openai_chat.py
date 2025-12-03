@@ -1,3 +1,4 @@
+import os
 from openai import OpenAI
 import pandas as pd
 from tqdm import tqdm
@@ -14,9 +15,9 @@ from tqdm import tqdm
 model = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 # model = "google/gemma-3-27b-it"
 # model = "mistralai/Mistral-Nemo-Instruct-2407"
-deepinfra_token = os.getenv("CHATANYWHERE_API_KEY")
+deepinfra_api_key = os.getenv("DEEPINFRA_API_KEY")
 client = OpenAI(
-	api_key=deepinfra_token,
+	api_key=deepinfra_api_key,
 	base_url="https://api.deepinfra.com/v1/openai",
 )
 
@@ -43,7 +44,7 @@ STRICT RULES — follow exactly:
 df = pd.read_csv(filepath_or_buffer="/home/farid/datasets/WW_DATASETs/SMU_1900-01-01_1970-12-31/metadata_multi_label.csv", on_bad_lines='skip', low_memory=False)
 
 description = """
-Ju 88A-17. Ju 88A-17 MTO 1943/44. Junkers Ju 88.
+Ju 90 V8 W.Nr. 4920 DJ+YE in flight. Junkers Ju 90 V8 W.Nr. 4920 DJ+YE in flight. Junkers Ju 90.
 """
 # descriptions = df['enriched_document_description'].tolist()
 
