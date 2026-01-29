@@ -1,7 +1,1783 @@
-import torch
-import copy
-from typing import Union, List, Optional
-import bitsandbytes as bnb  # Assuming installed, as in your adapters.py
+def get_vlm_based_labels_batched_parallel_response_parsing(
+	model_id: str,
+	device: str,
+	batch_size: int,
+	num_workers: int,
+	max_generated_tks: int,
+	max_kws: int,
+	csv_file: str,
+	mem_cleanup_th: int=95,
+	do_dedup: bool=True,
+	use_quantization: bool=False,
+	verbose: bool=False,
+):
+	t0 = time.time()
+
+	# ========== Check existing results ==========
+	output_csv = csv_file.replace(".csv", "_vlm_keywords.csv")
+	base_prompt = VLM_INSTRUCTION_TEMPLATE.format(k=max_kws)
+
+	try:
+		df = pd.read_csv(
+			filepath_or_buffer=output_csv,
+			on_bad_lines='skip',
+			dtype=dtypes,
+			low_memory=False,
+			usecols = ['vlm_keywords'],
+		)
+		return df['vlm_keywords'].tolist()
+	except Exception as e:
+		print(f"<!> {e} Generating from scratch...")
+	
+	# ========== Load data ==========
+	if verbose:
+		print(f"[PREP] Loading data (col: img_path) from {csv_file}...")
+	try:
+		df = pd.read_csv(
+			filepath_or_buffer=csv_file,
+			on_bad_lines='skip',
+			dtype=dtypes,
+			low_memory=False,
+			usecols = ['img_path'],
+		)
+	except Exception as e:
+		raise ValueError(f"Error loading CSV file: {e}")
+
+	image_paths = [p if isinstance(p, str) and os.path.exists(p) else None for p in df["img_path"]]
+	n_total = len(image_paths)
+	if verbose:
+		print(f"[DATA] Loaded {type(df)} {df.shape} with {n_total} image paths from CSV ({time.time() - t0:.2f}s)")
+
+	# ========== Prepare inputs (dedup + verification) ==========
+	if do_dedup:
+		uniq_map: Dict[str, int] = {}
+		uniq_inputs: List[Optional[str]] = []
+		orig_to_uniq: List[int] = []
+		for path in image_paths:
+			key = str(path) if path else "__NULL__"
+			if key not in uniq_map:
+				uniq_map[key] = len(uniq_inputs)
+				uniq_inputs.append(path if path else None)
+			orig_to_uniq.append(uniq_map[key])
+	else:
+		uniq_inputs = image_paths
+		orig_to_uniq = list(range(n_total))
+	
+	if verbose:
+		print(f"[INIT] Deduplication: {len(uniq_inputs)} unique images")
+	results: List[Optional[List[str]]] = [None] * len(uniq_inputs)
+
+	with ThreadPoolExecutor(max_workers=num_workers) as ex:
+		verified_paths = list(
+			tqdm(
+				ex.map(verify, uniq_inputs), 
+				total=len(uniq_inputs), 
+				desc=f"parallel image verification (nw: {num_workers})"
+			)
+		)
+	valid_indices = [i for i, v in enumerate(verified_paths) if v is not None]
+
+	if verbose:
+		print(f"[INIT] Verification: {len(valid_indices)} verified images")
+
+	# # MEMORY INTENSIVE! (DO NOT USE)
+	# valid_imgs = [Image.open(p).convert("RGB") for p in verified_paths if p is not None]
+	# print(len(valid_imgs), len(valid_indices), len(verified_paths))
+	# print(type(valid_imgs[0]), valid_imgs[0].size, valid_imgs[0].mode)
+
+	# ========== Load model ==========
+	processor, model = _load_vlm_(
+		model_id=model_id,
+		use_quantization=use_quantization,
+		verbose=verbose,
+	)
+
+	# ========== Prepare generation kwargs ==========
+	gen_kwargs = dict(max_new_tokens=max_generated_tks, use_cache=True)
+	if hasattr(model, "generation_config"):
+		gen_config = model.generation_config
+		gen_kwargs["temperature"] = getattr(gen_config, "temperature", 1e-6)
+		gen_kwargs["do_sample"] = getattr(gen_config, "do_sample", True)
+	else:
+		gen_kwargs.update(dict(temperature=1e-6, do_sample=True))
+	if verbose:
+		print(f"\n[GEN CONFIG] Using generation parameters:")
+		for k, v in gen_kwargs.items():
+			print(f"   • {k}: {v}")
+	
+	def _parse_batch_parallel(
+		decoded_responses: List[str],
+		batch_indices: List[int],
+		model_id_: str,
+		verbose_: bool,
+	) -> Dict[int, Optional[List[str]]]:
+		"""
+		Parse a list of decoded VLM responses in parallel.
+		Returns a mapping: {unique_index: parsed_keywords_or_None}
+		"""
+		out: Dict[int, Optional[List[str]]] = {}
+		def _parse_one(local_idx: int) -> Tuple[int, Optional[List[str]]]:
+			uniq_index = batch_indices[local_idx]
+			resp = decoded_responses[local_idx]
+			try:
+				parsed = parse_vlm_response(
+					model_id=model_id_,
+					raw_response=resp,
+					verbose=verbose_,
+				)
+				return uniq_index, parsed
+			except Exception as e:
+				if verbose_:
+					print(f"⚠️ Parsing error for unique index {uniq_index}: {e}")
+				return uniq_index, None
+		if not decoded_responses:
+			return out
+		with ThreadPoolExecutor(max_workers=num_workers) as ex:
+			futures = {ex.submit(_parse_one, i): i for i in range(len(decoded_responses))}
+			for fut in as_completed(futures):
+				uniq_index, parsed = fut.result()
+				out[uniq_index] = parsed
+		return out
+	
+	# ========== Process batches ==========
+	def _load_(p: str) -> Optional[Image.Image]:
+		try:
+			with Image.open(p) as im:
+				im = im.convert("RGB")
+				# If already pre-resized in data collection, no need for thumbnail here
+				# im.thumbnail((IMG_MAX_RES, IMG_MAX_RES))
+				return im.copy()
+		except Exception as e:
+			print(f"Error loading image {p}: {e}")
+			return None
+
+	num_workers = min(8, num_workers)
+	if verbose:
+		print(f"[INIT] BATCHED PARALLEL OPTIMIZED VLM processing with {num_workers} workers")
+
+	total_batches = math.ceil(len(valid_indices) / batch_size)
+	if verbose:
+		print(f"[INFO] {len(valid_indices)} valid unique images → {total_batches} batches of {batch_size}")
+
+	for b in tqdm(range(total_batches), desc="Processing (visual) batches", ncols=120):
+		batch_indices = valid_indices[b * batch_size:(b + 1) * batch_size]
+		batch_paths = [verified_paths[i] for i in batch_indices]
+
+		with ThreadPoolExecutor(max_workers=num_workers) as ex:
+			batch_imgs = list(ex.map(_load_, batch_paths))
+		
+		valid_pairs = [
+			(i, img)
+			for i, img in zip(batch_indices, batch_imgs) if img is not None
+		]
+		
+		if not valid_pairs:
+			if verbose:
+				print(f"\n[BATCH {b}]: No valid images in batch => skipping")
+			continue
+		else:
+			if verbose:
+				print(f"\n[BATCH {b}] contains {len(valid_pairs)} valid images.")
+
+		# Build per-sample messages
+		messages = [
+			[
+				{
+					"role": "user",
+					"content": [
+						{"type": "text", "text": base_prompt},
+						{"type": "image", "image": img},
+					],
+				}
+			]
+			for _, img in valid_pairs
+		]
+		
+		try:
+			# Build chat templates and process batch
+			chat_texts = [
+				processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True)
+				for m in messages
+			]
+			if verbose:
+				print(f"\n[BATCH {b}] Chat templates built: {type(chat_texts)} {len(chat_texts)} => Processing batch inputs in {next(model.parameters()).device}...")
+			inputs = processor(
+				text=chat_texts,
+				images=[img for _, img in valid_pairs],
+				return_tensors="pt",
+				padding=True,
+			).to(next(model.parameters()).device)
+			
+			# Generate response
+			if verbose:
+				print(f"\n[BATCH {b}] Generating responses for {len(valid_pairs)} images [takes a while]...")
+			with torch.no_grad():
+				with torch.amp.autocast(
+					device_type=device.type,
+					enabled=torch.cuda.is_available(),
+					dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+				):
+					outputs = model.generate(**inputs, **gen_kwargs)
+			
+			decoded = processor.batch_decode(outputs, skip_special_tokens=True)
+			if verbose:
+				print(f"\n[BATCH {b}] Decoded responses: {type(decoded)} {len(decoded)}")
+
+			# parallel parsing for this batch
+			parsed_dict = _parse_batch_parallel(
+				decoded_responses=decoded,
+				batch_indices=[i for i, _ in valid_pairs],
+				model_id_=model_id,
+				verbose_=verbose,
+			)
+			for uniq_idx, parsed in parsed_dict.items():
+				results[uniq_idx] = parsed
+		except Exception as e_batch:
+			print(f"\n[BATCH {b}]: {e_batch}\n")
+
+			if verbose:
+				print(f"Cleaning up after batch failure...")
+			if torch.cuda.is_available():
+				torch.cuda.empty_cache()
+			gc.collect()
+
+			if verbose:
+				print(f"\tFalling back to SEQUENTIAL processing for {len(valid_pairs)} images in this batch.")
+			for uniq_idx, img in tqdm(valid_pairs, desc="Processing batch images [SEQUENTIAL]", ncols=150):
+				if verbose:
+					print(f"\n[Fallback] Processing image {uniq_idx}: {type(img)} {img.size} {img.mode}\n")
+
+				single_message = [
+					{
+						"role": "user",
+						"content": [
+							{"type": "text", "text": base_prompt},
+							{"type": "image", "image": img},
+						],
+					}
+				]
+
+				try:
+					chat_single = processor.apply_chat_template(
+						single_message,
+						tokenize=False,
+						add_generation_prompt=True,
+					)
+
+					input_single = processor(
+						text=[chat_single],
+						images=[img],
+						return_tensors="pt",
+						padding=True,
+					).to(next(model.parameters()).device)
+					
+					if verbose:
+						print(f"[INPUT] Pixel: {input_single.pixel_values.shape} {input_single.pixel_values.dtype} {input_single.pixel_values.device}")
+
+					if input_single.pixel_values.numel() == 0:
+						raise ValueError(f"Pixel values of {uniq_idx} are empty: {input_single.pixel_values.shape}")
+
+					with torch.no_grad():
+						with torch.amp.autocast(
+							device_type=device.type,
+							enabled=torch.cuda.is_available(),
+							dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+						):
+							out_single = model.generate(**input_single, **gen_kwargs)
+
+					decoded_single = processor.decode(out_single[0], skip_special_tokens=True)
+
+					if verbose:
+						print(f"\n[✅ Sequential Fallback ✅] image {uniq_idx}:\n{type(decoded_single)} {len(decoded_single)}\n")
+
+					results[uniq_idx] = parse_vlm_response(
+						model_id=model_id,
+						raw_response=decoded_single,
+						verbose=verbose,
+					)
+				except Exception as e_fallback:
+					print(f"\n[❌ Sequential Fallback ❌] image {uniq_idx}:\n{e_fallback}\nNO keywords extracted.\n")
+					results[uniq_idx] = None
+				
+				if verbose:
+					print(f"\n[BATCH {b} Sequential Fallback] Deleting sequential fallback tensors for image: {uniq_idx}...")
+				try:
+					del single_message
+				except NameError:
+					pass
+				try:
+					del chat_single
+				except NameError:
+					pass
+				try:
+					del input_single
+				except NameError:
+					pass
+				try:
+					del out_single
+				except NameError:
+					pass
+				try:
+					del decoded_single
+				except NameError:
+					pass
+				
+				if verbose:
+					print(f"\n[BATCH {b} Sequential Fallback] Clearing cache for image: {uniq_idx}...")
+				
+				if torch.cuda.is_available():
+					torch.cuda.empty_cache()
+				gc.collect()
+
+		# Clean up batch tensors immediately after use
+		if verbose: 
+			print(f"\n[batch {b}] Deleting batch tensors...")
+		try:
+			del inputs
+		except NameError:
+			pass
+		try:
+			del outputs  
+		except NameError:
+			pass
+		try:
+			del decoded
+		except NameError:
+			pass
+		try:
+			del batch_paths
+		except NameError:
+			pass
+		try:
+			del batch_imgs
+		except NameError:
+			pass
+		try:
+			del valid_pairs
+		except NameError:
+			pass
+
+		# memory management
+		need_cleanup = False
+		memory_consumed_percent = 0
+		for device_idx in range(torch.cuda.device_count()):
+			mem_total = torch.cuda.get_device_properties(device_idx).total_memory / (1024**3) 
+			mem_allocated = torch.cuda.memory_allocated(device_idx) / (1024**3)
+			mem_reserved = torch.cuda.memory_reserved(device_idx) / (1024**3)	
+			mem_usage_pct = (mem_reserved / mem_total) * 100 if mem_total > 0 else 0
+			if verbose:
+				print(
+					f"[MEM] Batch {b} (GPU {device_idx}): {mem_usage_pct:.2f}% usage: "
+					f"{mem_allocated:.2f}GB alloc / {mem_reserved:.2f}GB reserved (Total: {mem_total:.1f}GB)"
+				)
+			if mem_usage_pct > mem_cleanup_th: 
+				need_cleanup = True
+				memory_consumed_percent += mem_usage_pct
+
+		if need_cleanup:
+			print(f"\n[WARN] High memory usage ({memory_consumed_percent:.1f}% > {mem_cleanup_th}%) => Clearing cache...")
+			torch.cuda.empty_cache() # clears all GPUs
+			gc.collect()
+
+	# ========== Map back to original ordering ==========
+	final = [results[i] for i in orig_to_uniq]
+	out_csv = csv_file.replace(".csv", "_vlm_keywords.csv")
+	df["vlm_keywords"] = final
+	# Save results
+	df.to_csv(out_csv, index=False)
+	try:
+		df.to_excel(out_csv.replace('.csv', '.xlsx'), index=False)
+	except Exception as e:
+		print(f"Failed to write Excel file: {e}")
+	elapsed = time.time() - t0
+	if verbose:
+		n_ok = sum(1 for r in final if r)
+		print(f"[STATS] ✅ Success {n_ok}/{len(final)}")
+		print(f"[TIME] {elapsed/3600:.2f}h | avg {len(final)/elapsed:.2f}/s")
+		print(f"[SAVE] Results written to: {out_csv}")
+	return final
+
+def get_vlm_based_labels_sequential_response_parsing(
+	model_id: str,
+	device: str,
+	batch_size: int,
+	num_workers: int,
+	max_generated_tks: int,
+	max_kws: int,
+	csv_file: str,
+	do_dedup: bool = True,
+	mem_cleanup_th: int = 95,
+	use_quantization: bool = False,
+	verbose: bool = False,
+):
+	if verbose:
+		print(f"\n{'='*100}")
+		print(f"[INIT] Starting OPTIMIZED batch VLM processing")
+		print(f"[INIT] Model: {model_id}")
+		print(f"[INIT] Batch size: {batch_size}")
+		print(f"[INIT] Device: {device}")
+		print(f"{'='*100}\n")
+
+	t0 = time.time()
+	output_csv = csv_file.replace(".csv", "_vlm_keywords.csv")
+	base_prompt = VLM_INSTRUCTION_TEMPLATE.format(k=max_kws)
+	try:
+		df = pd.read_csv(
+			filepath_or_buffer=output_csv,
+			on_bad_lines='skip',
+			dtype=dtypes,
+			low_memory=False,
+			usecols = ['vlm_keywords'],
+		)
+		return df['vlm_keywords'].tolist()
+	except Exception as e:
+		print(f"<!> {e} Generating from scratch...")
+	
+	# ========== Load data ==========
+	if verbose:
+		print(f"[PREP] Loading data (col: img_path) from {csv_file}...")
+	try:
+		df = pd.read_csv(
+			filepath_or_buffer=csv_file,
+			on_bad_lines='skip',
+			dtype=dtypes,
+			low_memory=False,
+			usecols = ['img_path'],
+		)
+	except Exception as e:
+		raise ValueError(f"Error loading CSV file: {e}")
+
+	image_paths = [p if isinstance(p, str) and os.path.exists(p) else None for p in df["img_path"]]
+	n_total = len(image_paths)
+	if verbose:
+		print(f"[DATA] Loaded {type(df)} {df.shape} with {n_total} image paths from CSV ({time.time() - t0:.2f}s)")
+
+	# ========== Prepare Unique Inputs (Dedup) ==========
+	if do_dedup:
+		uniq_map, uniq_inputs, orig_to_uniq = {}, [], []
+		for path in image_paths:
+			key = str(path) if path else "__NULL__"
+			if key not in uniq_map:
+				uniq_map[key] = len(uniq_inputs)
+				uniq_inputs.append(path if path else None)
+			orig_to_uniq.append(uniq_map[key])
+	else:
+		uniq_inputs, orig_to_uniq = image_paths, list(range(n_total))
+
+	with ThreadPoolExecutor(max_workers=num_workers) as ex:
+		verified = list(
+			tqdm(
+				ex.map(verify, uniq_inputs), 
+				total=len(uniq_inputs), 
+				desc=f"parallel image verification (nw: {num_workers})"
+			)
+		)
+	valid_indices = [i for i, v in enumerate(verified) if v is not None]
+
+	# ========== Load model ==========
+	processor, model = _load_vlm_(
+		model_id=model_id, 
+		use_quantization=use_quantization, 
+		verbose=verbose
+	)
+	# ========== Prepare generation kwargs ==========
+	gen_kwargs = dict(max_new_tokens=max_generated_tks, use_cache=True,)
+	# Use model’s built-in defaults unless the user overrides
+	if hasattr(model, "generation_config"):
+		gen_config = model.generation_config
+		gen_kwargs["temperature"] = getattr(gen_config, "temperature", 1e-6)
+		gen_kwargs["do_sample"] = getattr(gen_config, "do_sample", True)
+	else:
+		gen_kwargs.update(dict(temperature=1e-6, do_sample=True))
+
+	if verbose:
+		print(f"\n[GEN CONFIG] Using generation parameters:")
+		for k, v in gen_kwargs.items():
+			print(f"   • {k}: {v}")
+
+	# ========== Process batches ==========
+	total_batches = math.ceil(len(valid_indices) / batch_size)
+	if verbose:
+		print(f"[INFO] {len(valid_indices)} valid unique images → {total_batches} batches of {batch_size}")
+	results = [None] * len(uniq_inputs)
+	for b in tqdm(range(total_batches), desc="Processing (visual) batches", ncols=100):
+		idxs = valid_indices[b * batch_size : (b + 1) * batch_size]
+		def _load_(p):
+			try:
+				with Image.open(p).convert("RGB") as im:
+					# im.thumbnail((IMG_MAX_RES, IMG_MAX_RES))
+					return im.copy()
+			except Exception:
+				return None
+
+		with ThreadPoolExecutor(max_workers=num_workers) as ex:
+			imgs = list(ex.map(_load_, [verified[i] for i in idxs]))
+
+		valid_pairs = [(i, img) for i, img in zip(idxs, imgs) if img]
+
+		if not valid_pairs:
+			if verbose:
+				print(f"\n\t[batch {b}]: No valid images in batch => skipping")
+			continue
+		else:
+			if verbose:
+				print(f"\n[batch {b}]: {len(valid_pairs)} valid images in batch")
+
+		# Build messages
+		messages = [
+			[
+				{
+					"role": "user",
+					"content": [
+						{"type": "text", "text": base_prompt},
+						{"type": "image", "image": img},
+					],
+				}
+			]
+			for _, img in valid_pairs
+		]
+
+		if verbose:
+			print(f"\n[batch {b}] Building chat templates for {len(messages)} messages...")
+
+		try:
+			# Apply chat template for each message in the batch
+			chat_texts = [
+				processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True)
+				for m in messages
+			]
+			if verbose:
+				print(f"\n[batch {b}] Chat templates built: {type(chat_texts)} {len(chat_texts)}")
+
+			# pass both texts [txt1, txt2, ...] & images [img1, img2, ...]
+			if verbose:
+				print(f"\n[batch {b}] Processing batch inputs & sending them to {next(model.parameters()).device}...")
+			inputs = processor(
+				text=chat_texts,
+				images=[img for _, img in valid_pairs],
+				return_tensors="pt",
+				padding=True,
+			).to(next(model.parameters()).device)
+
+			if verbose: 
+				print(f"\n[batch {b}] Generating responses for {len(valid_pairs)} images sequentially [Might take a while]...")
+			with torch.no_grad():
+				with torch.amp.autocast(
+					device_type=device.type, 
+					enabled=torch.cuda.is_available(), 
+					dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+				):
+					outputs = model.generate(**inputs, **gen_kwargs)
+
+			if verbose: 
+				print(f"\n[batch {b}] Decoding responses...")
+
+			decoded = processor.batch_decode(outputs, skip_special_tokens=True)
+
+			if verbose: 
+				print(f"\n[batch {b}] Decoded responses: {type(decoded)} {len(decoded)}\n")
+
+			for i, resp in enumerate(decoded):
+				if verbose: 
+					print(f"[batch {b}] response index: {i}")
+				try:
+					parsed = parse_vlm_response(
+						model_id=model_id, 
+						raw_response=resp, 
+						verbose=verbose
+					)
+					results[idxs[i]] = parsed
+				except Exception:
+					results[idxs[i]] = None
+		except Exception as e_batch:
+			print(f"\n[BATCH {b}]: {e_batch}\n")
+			# Clean up after batch failure
+			if torch.cuda.is_available():
+				torch.cuda.empty_cache()
+			gc.collect()
+
+			if verbose:
+				print(f"\tFalling back to sequential processing for {len(valid_pairs)} images in this batch.")
+
+			# fallback: process each image sequentially
+			for idx_count, (i, img) in enumerate(tqdm(valid_pairs, desc="Processing batch images [Sequential]", ncols=100)):
+				try:
+					single_message = [
+						{
+							"role": "user",
+							"content": [
+								{"type": "text", "text": base_prompt},
+								{"type": "image", "image": img},
+							],
+						}
+					]
+					chat = processor.apply_chat_template(
+						single_message, 
+						tokenize=False, 
+						add_generation_prompt=True
+					)
+					single_inputs = processor(
+						text=[chat],
+						images=[img],
+						return_tensors="pt",
+					).to(next(model.parameters()).device)
+
+					if single_inputs.pixel_values.numel() == 0:
+						raise ValueError(f"Pixel values of {img} are empty: {single_inputs.pixel_values.shape}")
+
+					# Generate response
+					with torch.no_grad():
+						with torch.amp.autocast(
+							device_type=device.type, 
+							enabled=torch.cuda.is_available(), 
+							dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+						):
+							out = model.generate(**single_inputs, **gen_kwargs)
+
+					decoded = processor.decode(out[0], skip_special_tokens=True)
+					results[i] = parse_vlm_response(model_id=model_id, raw_response=decoded)
+					if verbose: 
+						print(f"\n[fallback ✅] image {i}: {results[i]}")
+					#  Clean up every 5 images during fallback to prevent fragmentation
+					if idx_count % 5 == 0:
+						if torch.cuda.is_available():
+							torch.cuda.empty_cache()
+						gc.collect()
+				except Exception as e_fallback:
+					print(f"\n[fallback ❌] image {i}:\n{e_fallback}\n")
+					results[i] = None
+
+		# Clean up batch tensors immediately after use
+		if verbose: 
+			print(f"\n[batch {b}] Deleting batch tensors...")
+		try:
+			del inputs
+		except NameError:
+			pass
+		try:
+			del outputs  
+		except NameError:
+			pass
+		try:
+			del decoded
+		except NameError:
+			pass
+		try:
+			del batch_paths
+		except NameError:
+			pass
+		try:
+			del batch_imgs
+		except NameError:
+			pass
+		try:
+			del valid_pairs
+		except NameError:
+			pass
+		try:
+			del chat_texts
+		except NameError:
+			pass
+
+		# memory management
+		need_cleanup = False
+		memory_consumed_percent = 0
+		for device_idx in range(torch.cuda.device_count()):
+			mem_total = torch.cuda.get_device_properties(device_idx).total_memory / (1024**3) 
+			mem_allocated = torch.cuda.memory_allocated(device_idx) / (1024**3)
+			mem_reserved = torch.cuda.memory_reserved(device_idx) / (1024**3)	
+			mem_usage_pct = (mem_reserved / mem_total) * 100 if mem_total > 0 else 0
+			if verbose:
+				print(
+					f"[MEM] Batch {b} (GPU {device_idx}): {mem_usage_pct:.2f}% usage: "
+					f"{mem_allocated:.2f}GB alloc / {mem_reserved:.2f}GB reserved (Total: {mem_total:.1f}GB)"
+				)
+			if mem_usage_pct > mem_cleanup_th: 
+				need_cleanup = True
+				memory_consumed_percent += mem_usage_pct
+
+		if need_cleanup:
+			print(f"\n[WARN] High memory usage ({memory_consumed_percent:.1f}% > {mem_cleanup_th}%) => Clearing cache...")
+			torch.cuda.empty_cache() # clears all GPUs
+			gc.collect()
+
+	final = [results[i] for i in orig_to_uniq]
+	out_csv = csv_file.replace(".csv", "_vlm_keywords.csv")
+	df["vlm_keywords"] = final
+
+	# save results to csv_& xlsx file
+	df.to_csv(out_csv, index=False)
+	try:
+		df.to_excel(out_csv.replace('.csv', '.xlsx'), index=False)
+	except Exception as e:
+		print(f"Failed to write Excel file: {e}")
+
+	elapsed = time.time() - t0
+	if verbose:
+		n_ok = sum(1 for r in final if r)
+		print(f"[STATS] ✅ Success {n_ok}/{len(final)}")
+		print(f"[TIME] {elapsed/3600:.2f}h | avg {len(final)/elapsed:.2f}/s")
+		print(f"[SAVE] Results written to: {out_csv}")
+	return final
+
+###############################################################
+def _load_and_verify_image(path: Optional[str]) -> Optional[Image.Image]:
+	if path is None or not os.path.exists(path):
+		return None
+	try:
+		with Image.open(path).convert("RGB") as im:
+			im.load()
+			return im.copy()
+	except Exception:
+		return None
+
+def _prefetch_worker(
+	batch_indices_list: List[List[int]],
+	uniq_inputs: List[Optional[str]],
+	executor: ProcessPoolExecutor,
+	queue: queue.Queue,
+):
+	"""
+	Producer function running in a background thread.
+	Iterates through all batches, uses the ProcessPool to load them,
+	and puts them in the queue.
+	"""
+	try:
+		for batch_indices in batch_indices_list:
+			# 1. Prepare paths for this batch
+			batch_paths = [uniq_inputs[i] for i in batch_indices]
+			
+			# 2. Load images in parallel using the Process Pool
+			# This blocks the THREAD, but the GPU (Main Thread) is working meanwhile
+			loaded_images = list(executor.map(_load_and_verify_image, batch_paths))
+			
+			# 3. Put results in Queue (Blocking if queue is full to prevent RAM explosion)
+			queue.put((batch_indices, loaded_images))
+			
+	except Exception as e:
+		print(f"\n[PREFETCH ERROR] {e}\n")
+	finally:
+		queue.put(None)
+
+def get_vlm_based_labels_synchronized(
+	model_id: str,
+	device: str,
+	batch_size: int,
+	num_workers: int,
+	max_generated_tks: int,
+	max_kws: int,
+	csv_file: str,
+	do_dedup: bool = True,
+	use_quantization: bool = False,
+	verbose: bool = False,
+):
+	output_csv = csv_file.replace(".csv", "_vlm_keywords.csv")
+	
+	# 1. Check Existing
+	if verbose:
+		print(f"[INIT] Starting PREFETCHED batch VLM processing (CPU Overlap)")
+	if os.path.exists(output_csv):
+		try:
+			df = pd.read_csv(output_csv, on_bad_lines='skip', dtype=dtypes, low_memory=False)
+			if 'vlm_keywords' in df.columns:
+				return df['vlm_keywords'].tolist()
+		except Exception:
+			pass
+
+	t0 = time.time()
+	num_workers = min(os.cpu_count(), num_workers)
+
+	# 2. Load Data
+	if verbose:
+		print(f"[DATA] Loading data from {csv_file}...")
+	df = pd.read_csv(csv_file, on_bad_lines="skip", low_memory=False)
+	if "img_path" not in df.columns:
+		raise ValueError("CSV file must have 'img_path' column")
+	image_paths = [p if isinstance(p, str) and os.path.exists(p) else None for p in df["img_path"]]
+	if verbose:
+		print(f"[DATA] Loaded {len(image_paths)} image paths from CSV ({time.time() - t0:.2f}s)")
+
+	# 3. Load Model
+	processor, model = _load_vlm_(model_id, use_quantization, verbose)
+	
+	# 4. Prepare Generation Config
+	gen_kwargs = dict(max_new_tokens=max_generated_tks, use_cache=True)
+	if hasattr(model, "generation_config"):
+		cfg = model.generation_config
+		gen_kwargs["temperature"] = getattr(cfg, "temperature", 1e-6)
+		gen_kwargs["do_sample"] = getattr(cfg, "do_sample", True)
+	else:
+		gen_kwargs.update(dict(temperature=1e-6, do_sample=True))
+	base_prompt = VLM_INSTRUCTION_TEMPLATE.format(k=max_kws)
+	# 5. Deduplication
+	if do_dedup:
+		uniq_map: Dict[str, int] = {}
+		uniq_inputs: List[Optional[str]] = []
+		orig_to_uniq: List[int] = []
+		for path in image_paths:
+			key = str(path) if path else "__NULL__"
+			if key not in uniq_map:
+				uniq_map[key] = len(uniq_inputs)
+				uniq_inputs.append(path)
+			orig_to_uniq.append(uniq_map[key])
+	else:
+		uniq_inputs = image_paths
+		orig_to_uniq = list(range(len(image_paths)))
+	# 6. Prepare Batch Indices for Prefetching
+	# We calculate slices upfront so the producer knows exactly what to load
+	total_batches = math.ceil(len(uniq_inputs) / batch_size)
+	batch_indices_list = [
+		list(range(b * batch_size, min((b + 1) * batch_size, len(uniq_inputs))))
+		for b in range(total_batches)
+	]
+	
+	results: List[Optional[List[str]]] = [None] * len(uniq_inputs)
+
+	# 7. Initialize Overlapping Pipeline (Producer-Consumer)
+	# GPU almost never waits, and RAM usage is still minimal
+	max_size = 2 # if torch.cuda.device_count()>1 else 1
+	if verbose:
+		print(f"[QUEUE] Initializing queue with maxsize {max_size}...")
+	prefetch_queue = queue.Queue(maxsize=max_size)
+	
+	# Initialize Process Pool (Global Workers)
+	# This stays alive throughout the entire loop
+	if verbose:
+		print(f"[POOL] Initializing ProcessPool with {num_workers} workers for I/O overlap...")
+	
+	load_executor = ProcessPoolExecutor(max_workers=num_workers)
+	
+	# Start Producer Thread
+	producer_thread = threading.Thread(
+		target=_prefetch_worker,
+		args=(
+			batch_indices_list, 
+			uniq_inputs, 
+			load_executor, 
+			prefetch_queue, 
+		)
+	)
+	producer_thread.start()
+
+	# 8. Consumer Loop (Main Thread - GPU)
+	# This loop pulls from queue. If prefetch is fast, data is ready instantly.
+	if verbose:
+		print("[GPU] Starting inference loop (Consumer)...")
+	for b in tqdm(range(total_batches), desc="Processing (VISUAL) batches", ncols=100):
+		# Block until a batch is ready
+		data = prefetch_queue.get()
+		if data is None:
+			break # End of stream
+		
+		batch_indices, loaded_images = data
+		
+		# Filter valid images
+		valid_pairs = [
+			(idx, img) 
+			for idx, img in zip(batch_indices, loaded_images) 
+			if img is not None
+		]
+		
+		if not valid_pairs:
+			continue
+		else:
+			if verbose:
+				print(f"\n[BATCH {b}] Processing {len(valid_pairs)} valid images...")
+
+		# Prepare inputs
+		messages = [
+			[
+				{
+					"role": "user", 
+					"content":
+					[
+						{
+							"type": "text", 
+							"text": base_prompt
+						}, 
+						{
+							"type": "image", 
+							"image": img
+						}
+					]
+				}
+			]
+			for _, img in valid_pairs
+		]
+
+		try:
+			chat_texts = [
+				processor.apply_chat_template(m, tokenize=False, add_generation_prompt=True) 
+				for m in messages
+			]
+			inputs = processor(
+				text=chat_texts, 
+				images=[img for _, img in valid_pairs], 
+				return_tensors="pt", 
+				padding=True
+			).to(model.device)
+			
+			# GPU Inference
+			with torch.no_grad():
+				with torch.amp.autocast(
+					device_type=device.type,
+					enabled=torch.cuda.is_available(),
+					dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+				):
+					outputs = model.generate(**inputs, **gen_kwargs)
+			
+			decoded = processor.batch_decode(outputs, skip_special_tokens=True)
+
+			# Parse
+			for i, raw_resp in enumerate(decoded):
+				uniq_idx = valid_pairs[i][0]
+				try:
+					results[uniq_idx] = parse_vlm_response(model_id, raw_resp, verbose=False)
+				except Exception as e:
+					if verbose: 
+						print(f"Parse error {uniq_idx}: {e}")
+					results[uniq_idx] = None
+		except Exception as e:
+			print(f"<!> [BATCH {b} Error(No Keywords Generated!)]\n{e}")
+			torch.cuda.empty_cache()
+			gc.collect()
+		
+		if verbose: 
+			print(f"\n[BATCH {b}] Deleting tensors (if any)...")
+		try:
+			del inputs
+		except NameError:
+			pass
+		try:
+			del outputs  
+		except NameError:
+			pass
+		try:
+			del decoded
+		except NameError:
+			pass
+		try:
+			del messages
+		except NameError:
+			pass
+		try:
+			del chat_texts
+		except NameError:
+			pass
+		try:
+			del valid_pairs
+		except NameError:
+			pass
+
+		for device_idx in range(torch.cuda.device_count()):
+			mem_total = torch.cuda.get_device_properties(device_idx).total_memory / (1024**3) 
+			mem_allocated = torch.cuda.memory_allocated(device_idx) / (1024**3)
+			mem_reserved = torch.cuda.memory_reserved(device_idx) / (1024**3)	
+			mem_usage_pct = (mem_reserved / mem_total) * 100 if mem_total > 0 else 0
+			if verbose:
+				print(
+					f"[MEM] Batch {b} (GPU {device_idx}): {mem_usage_pct:.2f}% usage. "
+					f"{mem_allocated:.2f}GB alloc / {mem_reserved:.2f}GB reserved (Total: {mem_total:.1f}GB)"
+				)
+			cleanup_threshold = 90
+			if mem_usage_pct > cleanup_threshold: 
+				print(f"[WARN] High memory usage ({mem_usage_pct:.1f}%). Clearing cache...")
+				torch.cuda.empty_cache()
+				gc.collect()
+
+	producer_thread.join(timeout=30)
+	if producer_thread.is_alive():
+		if verbose:
+			print("[WARN] Producer thread did not terminate within 30s. Forcing termination...")
+		load_executor.shutdown(wait=True, cancel_futures=True)
+
+	final = [results[i] for i in orig_to_uniq]
+	df["vlm_keywords"] = final
+
+	df.to_csv(output_csv, index=False)
+	try:
+		df.to_excel(output_csv.replace('.csv', '.xlsx'), index=False)
+	except Exception as e:
+		print(f"Failed to write Excel file: {e}")
+	
+	if verbose:
+		print(f"[DONE] Saved results to {output_csv}")
+		print(f"[TIME] Total: {time.time() - t0:.2f}s")
+
+	return final
+###############################################################
+
+def get_llm_based_labels_opt_old(
+		model_id: str,
+		device: str,
+		batch_size: int,
+		max_generated_tks: int,
+		max_kws: int,
+		csv_file: str,
+		do_dedup: bool=True,
+		max_retries: int=2,
+		use_quantization: bool=False,
+		verbose: bool=False,
+	) -> List[Optional[List[str]]]:
+
+	output_csv = csv_file.replace(".csv", "_llm_keywords.csv")
+
+	if os.path.exists(output_csv):
+		if verbose: print(f"Found existing results at {output_csv}...")
+		df = pd.read_csv(
+			filepath_or_buffer=output_csv,
+			on_bad_lines='skip',
+			dtype=dtypes,
+			low_memory=False,
+		)
+		if 'llm_keywords' in df.columns:
+			if verbose: print(f"[EXISTING] Found existing LLM keywords in {output_csv}")
+			return df['llm_keywords'].tolist()
+
+	if verbose:
+		print(f"\n{'='*100}")
+		print(f"[INIT] Starting OPTIMIZED batch LLM processing")
+		print(f"[INIT] Model: {model_id}")
+		print(f"[INIT] Batch size: {batch_size}")
+		print(f"[INIT] Device: {device}")
+		print(f"{'='*100}\n")
+	st_t = time.time()
+
+	try:
+		df = pd.read_csv(
+			filepath_or_buffer=csv_file, 
+			on_bad_lines='skip',
+			dtype=dtypes, 
+			low_memory=False,
+		)
+	except pd.errors.ParserError as e:
+		if verbose: print(f"CSV parsing error, trying with python engine: {e}")
+		df = pd.read_csv(
+			filepath_or_buffer=csv_file, 
+			on_bad_lines='skip',
+			dtype=dtypes,
+			engine='python',
+		)
+	if 'enriched_document_description' not in df.columns:
+		raise ValueError("CSV file must have 'enriched_document_description' column")
+
+	descriptions = df['enriched_document_description'].tolist()
+	if verbose: print(f"Loaded {len(descriptions)} descriptions")
+
+	inputs = descriptions
+	if len(inputs) == 0:
+		return None
+	
+	tokenizer, model = _load_llm_(
+		model_id=model_id, 
+		device=device, 
+		use_quantization=use_quantization,
+		verbose=verbose,
+	)
+
+	if verbose:
+		valid_count = sum(1 for x in inputs if x is not None and str(x).strip() not in ("", "nan", "None"))
+		null_count = len(inputs) - valid_count
+		print(f"📊 Input stats: {type(inputs)} {len(inputs)} total, {valid_count} valid, {null_count} null")
+
+	# 🔧 NULL-SAFE DEDUPLICATION
+	if do_dedup:
+		unique_map: Dict[str, int] = {}
+		unique_inputs = []
+		original_to_unique_idx = []
+		for s in inputs:
+			if s is None or str(s).strip() in ("", "nan", "None"):
+				key = "__NULL__"
+			else:
+				key = str(s).strip()
+			if key in unique_map:
+				original_to_unique_idx.append(unique_map[key])
+			else:
+				idx = len(unique_inputs)
+				unique_map[key] = idx
+				unique_inputs.append(None if key == "__NULL__" else key)
+				original_to_unique_idx.append(idx)
+	else:
+		unique_inputs = []
+		for s in inputs:
+			if s is None or str(s).strip() in ("", "nan", "None"):
+				unique_inputs.append(None)
+			else:
+				unique_inputs.append(str(s).strip())
+		original_to_unique_idx = list(range(len(unique_inputs)))
+	
+	unique_prompts = []
+	for s in unique_inputs:
+		if s is None:
+			unique_prompts.append(None)
+		else:
+			if verbose: print(f"Generating prompt for text with len={len(s.split()):<10}max_kws={min(max_kws, len(s.split()))}")
+			prompt = get_prompt(
+				tokenizer=tokenizer, 
+				description=s, 
+				max_kws=min(max_kws, len(s.split()))
+			)
+			unique_prompts.append(prompt)
+
+	unique_results: List[Optional[List[str]]] = [None] * len(unique_prompts)
+	valid_indices = [i for i, p in enumerate(unique_prompts) if p is not None]
+
+	if not valid_indices:
+		if verbose: print(f" <!> No valid prompts found after deduplication => exiting")
+		return None
+
+	total_batches = math.ceil(len(valid_indices) / batch_size)
+
+	if verbose: print(f"Processing {len(valid_indices)} unique prompts in batches of {batch_size} samples => {total_batches} batches")
+	
+	# Group valid indices into batches
+	batches = []
+	for i in range(0, len(valid_indices), batch_size):
+		batch_indices = valid_indices[i:i + batch_size]
+		batch_prompts = [unique_prompts[idx] for idx in batch_indices]
+		batches.append((batch_indices, batch_prompts))
+	
+	for batch_num, (batch_indices, batch_prompts) in enumerate(tqdm(batches, desc="Processing (textual) batches", ncols=100)):
+		if verbose:
+			print(f"Batch [{batch_num + 1}/{total_batches}]")
+		
+		for attempt in range(max_retries + 1):
+			if attempt > 0 and verbose:
+				print(f"🔄 Retry attempt {attempt + 1}/{max_retries + 1} for batch {batch_num + 1}")
+
+			try:
+				tokenized = tokenizer(
+					batch_prompts,
+					return_tensors="pt",
+					truncation=True,
+					max_length=4096,
+					padding=True,
+				)
+				if device != 'cpu':
+					tokenized = {k: v.to(device) for k, v in tokenized.items()}
+
+				gen_kwargs = dict(
+					input_ids=tokenized.get("input_ids"),
+					attention_mask=tokenized["attention_mask"],
+					max_new_tokens=max_generated_tks,
+					do_sample=TEMPERATURE > 0.0,
+					temperature=TEMPERATURE,
+					top_p=TOP_P,
+					pad_token_id=tokenizer.pad_token_id,
+					eos_token_id=tokenizer.eos_token_id,
+				)
+
+				# Generate response
+				with torch.no_grad():
+					with torch.amp.autocast(
+						device_type=device.type, 
+						enabled=torch.cuda.is_available(),
+						dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+					):
+						outputs = model.generate(**gen_kwargs)
+
+				decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+
+				if verbose:
+					print(f"\nBatch[{batch_num}] decoded responses: {type(decoded)} {len(decoded)}")
+
+				# Parse each response
+				for i, text_out in enumerate(decoded):
+					if verbose:
+						print(f"Batch[{batch_num}/{total_batches}] response index: {i}/{len(decoded)}")
+					idx = batch_indices[i]
+					try:
+						parsed = parse_llm_response(
+							model_id=model_id,
+							input_prompt=batch_prompts[i],
+							raw_llm_response=text_out,
+							max_kws=max_kws,
+							verbose=verbose,
+						)
+						unique_results[idx] = parsed
+					except Exception as e:
+						print(f"⚠️ Parsing error for batch index {idx}: {e}")
+						unique_results[idx] = None
+				break  # Break retry loop on success	
+			except Exception as e:
+				print(f"❌ Batch {batch_num + 1} attempt {attempt + 1} failed:\n{e}")
+				if attempt < max_retries:
+					sleep_time = EXP_BACKOFF ** attempt
+					print(f"⏳ Waiting {sleep_time}s before retry...")
+					time.sleep(sleep_time)
+					torch.cuda.empty_cache() if torch.cuda.is_available() else None
+				else:
+					print(f"💥 Batch {batch_num + 1} failed after {max_retries + 1} attempts")
+					for idx in batch_indices:
+						unique_results[idx] = None
+
+		# Clean up batch tensors immediately after use
+		try:
+			del tokenized
+		except NameError:
+			pass
+		try:
+			del outputs  
+		except NameError:
+			pass
+		try:
+			del decoded
+		except NameError:
+			pass
+
+		# Memory management - clear cache every 10 batches
+		if batch_num % 25 == 0:
+			torch.cuda.empty_cache()
+			gc.collect()
+
+	# 🔄 HYBRID FALLBACK: Retry failed items individually
+	failed_indices = [
+		i 
+		for i, result in enumerate(unique_results) 
+		if result is None and unique_inputs[i] is not None
+	]
+	
+	if failed_indices and verbose:
+		print(f"🔄 Retrying {len(failed_indices)} failed items individually using query_local_llm [sequential processing]...")
+	
+	for idx in failed_indices:
+		desc = unique_inputs[idx]
+		if verbose: print(f"🔄 Retrying individual item {idx}:\n{desc}")
+		try:
+			# Use the same model/tokenizer for individual processing
+			individual_result = query_local_llm(
+				model=model,
+				tokenizer=tokenizer,
+				text=desc,
+				device=device,
+				max_generated_tks=max_generated_tks,
+				max_kws=min(max_kws, len(desc.split())),
+				verbose=verbose,
+			)
+			unique_results[idx] = individual_result
+			if verbose and individual_result: print(f"✅ Individual retry successful: {individual_result}")
+			elif verbose: print(f"❌ Individual retry failed for item {idx}")
+		except Exception as e:
+			if verbose: print(f"💥 Individual retry error for item {idx}: {e}")
+			unique_results[idx] = None
+
+	# Map unique_results back to original order
+	results = []
+	for orig_i, uniq_idx in tqdm(enumerate(original_to_unique_idx), desc="Mapping results", ncols=150):
+		results.append(unique_results[uniq_idx])
+	
+	# if verbose:
+	# 	n_ok = sum(1 for r in results if r is not None)
+	# 	n_null = sum(
+	# 		1 
+	# 		for i, inp in enumerate(inputs) 
+	# 		if inp is None or str(inp).strip() in ("", "nan", "None")
+	# 	)
+	# 	n_failed = len(results) - n_ok - n_null
+	# 	success_rate = (n_ok / (len(results) - n_null)) * 100 if (len(results) - n_null) > 0 else 0
+		
+	# 	print(
+	# 		f"📊 Final results: {n_ok}/{len(results)-n_null} successful ({success_rate:.1f}%), "
+	# 		f"{n_null} null inputs, {n_failed} failed"
+	# 	)
+
+	if verbose:
+		stats_start = time.time()
+		n_ok = 0
+		n_null = 0
+		
+		for inp, res in zip(inputs, results):
+			if res is not None:
+				n_ok += 1
+			if inp is None or str(inp).strip() in ("", "nan", "None"):
+				n_null += 1
+		
+		total_results = len(results)
+		valid_inputs_count = total_results - n_null
+		n_failed = valid_inputs_count - n_ok
+		success_rate = (n_ok / valid_inputs_count) * 100 if valid_inputs_count > 0 else 0
+		
+		print(
+			f"[STATS] {n_ok}/{valid_inputs_count} successful ({success_rate:.1f}%) "
+			f"{n_null} null inputs {n_failed} failed "
+			f"Elapsed_t: {time.time() - stats_start:.2f}s"
+		)
+
+	if verbose: print(f"Cleaning up model and tokenizer...")
+	del model, tokenizer
+	torch.cuda.empty_cache() if torch.cuda.is_available() else None
+
+	# save results to csv_& xlsx file
+	if csv_file:
+		output_csv = csv_file.replace(".csv", "_llm_keywords.csv")
+		if verbose: print(f"Saving results to {output_csv}...")
+		df['llm_keywords'] = results
+		df.to_csv(output_csv, index=False)
+		try:
+			df.to_excel(output_csv.replace('.csv', '.xlsx'), index=False)
+		except Exception as e:
+			print(f"Failed to write Excel file: {e}")
+		if verbose:
+			print(f"Saved {len(results)} keywords to {output_csv} {df.shape} {list(df.columns)}")
+
+	if verbose: print(f"Total LLM-based keyword extraction time: {time.time() - st_t:.1f} sec")
+
+	return results
+
+def get_multimodal_annotation_old(
+		csv_file: str,
+		llm_model_id: str,
+		vlm_model_id: str,
+		device: str,
+		num_workers: int,
+		llm_batch_size: int,
+		vlm_batch_size: int,
+		max_generated_tks: int,
+		max_keywords: int,
+		use_quantization: bool = False,
+		verbose: bool = False,
+		debug: bool = False,
+	):
+
+	df = pd.read_csv(
+		filepath_or_buffer=csv_file,
+		on_bad_lines='skip',
+		dtype=dtypes,
+		low_memory=False,
+	)
+	if verbose:
+		print(f"FULL Dataset {type(df)} {df.shape}\n{list(df.columns)}")
+
+	if 'img_path' not in df.columns:
+		raise ValueError("CSV file must have 'img_path' column")
+
+	if 'enriched_document_description' not in df.columns:
+		raise ValueError("CSV file must have 'enriched_document_description' column")
+
+	if verbose:
+		print(f"FULL Dataset {type(df)} {df.shape}\n{list(df.columns)}")
+
+	output_csv = csv_file.replace(".csv", "_multimodal.csv")
+
+	# Textual-based annotation using LLMs
+	if debug:
+		llm_based_labels = get_llm_based_labels_debug(
+			model_id=llm_model_id,
+			device=device,
+			csv_file=csv_file,
+			batch_size=llm_batch_size,
+			max_generated_tks=max_generated_tks,
+			max_kws=max_keywords,
+			use_quantization=use_quantization,
+			verbose=verbose,
+		)
+	else:
+		llm_based_labels = get_llm_based_labels_opt(
+			model_id=llm_model_id,
+			device=device,
+			csv_file=csv_file,
+			batch_size=llm_batch_size,
+			max_generated_tks=max_generated_tks,
+			max_kws=max_keywords,
+			num_workers=num_workers,
+			use_quantization=use_quantization,
+			verbose=verbose,
+		)
+
+	if verbose:
+		print(f"Extracted {len(llm_based_labels)} LLM-based {type(llm_based_labels)} labels")
+		print("="*120)
+
+	# clear memory
+	torch.cuda.empty_cache()
+
+	# Visual-based annotation using VLMs
+	if debug:
+		vlm_based_labels = get_vlm_based_labels_debug(
+			model_id=vlm_model_id,
+			device=device,
+			csv_file=csv_file,
+			batch_size=vlm_batch_size,
+			max_kws=max_keywords,
+			max_generated_tks=max_generated_tks,
+			use_quantization=use_quantization,
+			verbose=verbose,
+		)
+	else:
+		vlm_based_labels = get_vlm_based_labels_opt(
+			model_id=vlm_model_id,
+			device=device,
+			csv_file=csv_file,
+			num_workers=num_workers,
+			batch_size=vlm_batch_size,
+			max_kws=max_keywords,
+			max_generated_tks=max_generated_tks,
+			use_quantization=use_quantization,
+			verbose=verbose,
+		)
+	if verbose:
+		print(f"Extracted {len(vlm_based_labels)} VLM-based {type(vlm_based_labels)} labels")
+
+	# clear memory
+	torch.cuda.empty_cache()
+
+	# Combine textual and visual annotations
+	if len(llm_based_labels) != len(vlm_based_labels):
+		raise ValueError("LLM and VLM based labels must have same length")
+
+	if verbose:
+		print(f"Combining {len(llm_based_labels)} {type(llm_based_labels)} LLM- and {len(vlm_based_labels)} {type(vlm_based_labels)} VLM-based labels...")
+	multimodal_labels = merge_labels(
+		llm_based_labels=llm_based_labels, 
+		vlm_based_labels=vlm_based_labels,
+	)
+	if verbose:
+		print(f"Combined {len(multimodal_labels)} {type(multimodal_labels)} multimodal labels")
+
+	# clear memory
+	torch.cuda.empty_cache()
+
+	# Apply lowercase conversion
+	llm_based_labels = _post_process_(labels_list=llm_based_labels, verbose=verbose)
+	vlm_based_labels = _post_process_(labels_list=vlm_based_labels, verbose=verbose)
+	multimodal_labels = _post_process_(labels_list=multimodal_labels, verbose=verbose)
+
+	df['llm_based_labels'] = llm_based_labels
+	df['vlm_based_labels'] = vlm_based_labels
+	df['multimodal_labels'] = multimodal_labels
+
+	df.to_csv(output_csv, index=False)
+	try:
+		df.to_excel(output_csv.replace('.csv', '.xlsx'), index=False)
+	except Exception as e:
+		print(f"Failed to write Excel file: {e}")
+
+	if verbose:
+		print(f"Saved {type(df)} {df.shape} to {output_csv}\n{list(df.columns)}")
+
+	perform_multilabel_eda(
+		data_path=output_csv, 
+		label_column='multimodal_labels'
+	)
+
+	train_df, val_df = get_multi_label_stratified_split(
+		csv_file=output_csv,
+		val_split_pct=0.35,
+		label_col='multimodal_labels'
+	)
+
+	return multimodal_labels
+
+def _qwen_llm_response(model_id: str, input_prompt: str, llm_response: str, max_kws: int, verbose: bool = False) -> Optional[List[str]]:
+	def _extract_clean_list_content(text: str) -> Optional[str]:
+		if verbose:
+			print(f"Extracting clean list from text of length: {len(text)}")
+		
+		# Find ALL [/INST] tags and get content BETWEEN them
+		inst_matches = list(re.finditer(r'\[\s*/?\s*INST\s*\]', text))
+		
+		if verbose:
+			print(f"Found {len(inst_matches)} INST tags total")
+		
+		# Look for content between [/INST] tags where lists typically appear
+		list_candidates = []
+		
+		for i in range(len(inst_matches) - 1):
+				current_tag = inst_matches[i].group().strip()
+				next_tag = inst_matches[i + 1].group().strip()
+				
+				# If we have a closing [/INST] followed by anything
+				if ('[/INST]' in current_tag or '/INST' in current_tag):
+						start_pos = inst_matches[i].end()
+						end_pos = inst_matches[i + 1].start()
+						content_between = text[start_pos:end_pos].strip()
+						
+						if verbose:
+							print(f"Content between INST tags {i}-{i+1}: '{content_between[:100]}...'")
+						
+						# Look for Python-style lists with quotes (not photo titles)
+						python_list_patterns = [
+							r"\[\s*'[^']*'(?:\s*,\s*'[^']*')*\s*\]",  # Single quotes
+							r'\[\s*"[^"]*"(?:\s*,\s*"[^"]*")*\s*\]',  # Double quotes
+						]
+						
+						for pattern in python_list_patterns:
+							list_matches = list(re.finditer(pattern, content_between))
+							for match in list_matches:
+								list_content = match.group(0).strip()
+								# Skip example lists from rules
+								if 'keyword1' in list_content or 'keyword2' in list_content or '...' in list_content:
+										if verbose:
+												print(f"Skipping example list: {list_content[:50]}...")
+										continue
+								# Skip photo titles (they don't have proper Python list formatting)
+								if "'s '" in list_content or "and Photographer with" in list_content:
+										continue
+								
+								list_candidates.append((list_content, f"INST tags {i}-{i+1}"))
+		
+		if verbose:
+			print(f"Found {len(list_candidates)} list candidates between INST tags")
+		
+		if not list_candidates:
+			# search the entire response but skip example lists and photo titles
+			if verbose:
+				print("No lists found between INST tags, searching entire response...")
+			
+			python_list_patterns = [
+				r"\[\s*'[^']*'(?:\s*,\s*'[^']*')*\s*\]",
+				r'\[\s*"[^"]*"(?:\s*,\s*"[^"]*")*\s*\]',
+			]
+			
+			for pattern in python_list_patterns:
+				all_list_matches = list(re.finditer(pattern, text))
+				for match in all_list_matches:
+					list_content = match.group(0).strip()
+					# Skip example lists from rules
+					if 'keyword1' in list_content or 'keyword2' in list_content or '...' in list_content:
+						continue
+					# Skip photo titles
+					if "'s '" in list_content or "and Photographer with" in list_content:
+						continue
+							
+					list_candidates.append((list_content, "entire response"))
+		
+		# Select the best candidate
+		if list_candidates:
+			# Prefer lists that come from between INST tags
+			for list_str, source in list_candidates:
+				if "INST tags" in source:
+					if verbose:
+						print(f"Selected list from {source}: {list_str}")
+					return list_str
+			
+			# Otherwise take the first one
+			best_candidate = list_candidates[0][0]
+			if verbose:
+				print(f"Selected first candidate: {best_candidate}")
+			return best_candidate
+		
+		return None
+
+	def _parse_list_safely(list_str: str) -> List[str]:
+			"""Safely parse a list string, handling various formats."""
+			if verbose:
+					print(f"Parsing list safely: {list_str}")
+			
+			# Clean the string
+			cleaned = list_str.strip()
+			cleaned = re.sub(r'\[/?INST\]', '', cleaned)
+			cleaned = re.sub(r'[“”]', '"', cleaned)
+			cleaned = re.sub(r'[‘’]', "'", cleaned)
+			
+			# Remove any trailing garbage after the list
+			if cleaned.count('[') > cleaned.count(']'):
+					cleaned = cleaned[:cleaned.rfind(']') + 1] if ']' in cleaned else cleaned
+			if cleaned.count('[') < cleaned.count(']'):
+					cleaned = cleaned[cleaned.find('['):] if '[' in cleaned else cleaned
+			
+			# Try different parsing strategies
+			strategies = [
+					# Strategy 1: ast.literal_eval
+					lambda s: ast.literal_eval(s),
+					# Strategy 2: json.loads
+					lambda s: json.loads(s),
+					# Strategy 3: Manual parsing with quotes
+					lambda s: [item.strip().strip('"\'') for item in 
+										re.findall(r'[\"\'][^\"\']*[\"\']', s)],
+					# Strategy 4: Manual parsing with comma separation (more robust)
+					lambda s: [item.strip().strip('"\'') for item in 
+										re.split(r',\s*(?=(?:[^\"\']*[\"\'][^\"\']*[\"\'])*[^\"\']*$)', s.strip('[]')) 
+										if item.strip() and not item.strip().startswith('...')],
+			]
+			
+			for i, strategy in enumerate(strategies):
+					try:
+							result = strategy(cleaned)
+							if isinstance(result, list) and all(isinstance(item, str) for item in result) and result:
+									if verbose:
+											print(f"Success with strategy {i+1}: {result}")
+									return result
+					except Exception as e:
+							if verbose:
+									print(f"Strategy {i+1} failed: {e}")
+							continue
+			
+			return []
+
+	def _postprocess_keywords(keywords: List[str]) -> List[str]:
+		"""Post‑process keywords to ensure quality and remove duplicates."""
+		processed = []
+		seen = set()
+		for kw in keywords:
+			if not kw:
+				if verbose: print(f"Skipping empty keyword: <{kw}>") 
+				continue
+			# 1️⃣ Drop very short tokens (already in place)
+			if len(kw) < 2:
+				if verbose: print(f"Skipping short keyword: {kw} (len={len(kw)})") 
+				continue
+			# 2️⃣ Normalise whitespace
+			cleaned = re.sub(r'\s+', ' ', kw.strip())
+			# 3️⃣ Drop stop‑words
+			if cleaned.lower() in STOPWORDS:
+				if verbose: print(f"Skipping stopword: {cleaned}")
+				continue
+			# 4️⃣ reject anything that contains a digit OR a non‑alphabetic character
+			#    (we keep letters, spaces and apostrophes only)
+			# if re.search(r'[\d]', cleaned):
+			# 	if verbose: print(f"Skipping numeric keyword: {cleaned}")
+			# 	continue
+			# if re.search(r'[^A-Za-z\'\s]', cleaned):
+			# 	if verbose: print(f"Skipping non‑alpha keyword: {cleaned}")
+			# 	continue
+			# 5️⃣ Drop pure‑numeric strings
+			# if re.fullmatch(r'\d+', cleaned):
+			# 	if verbose: print(f"Skipping pure-numeric keyword: {cleaned}")
+			# 	continue
+			# 6️⃣ Deduplicate (case‑insensitive)
+			normalized = cleaned.lower()
+			if normalized in seen:
+				if verbose: print(f"Skipping duplicate keyword: {cleaned}")
+				continue
+			seen.add(normalized)
+			processed.append(cleaned)
+			if len(processed) >= max_kws:
+				if verbose: print(f"Reached max keywords: {processed}")
+				break
+		return processed
+	
+	# INST tag detection
+	inst_tags = []
+	for match in re.finditer(r'\[\s*/?\s*INST\s*\]', llm_response):
+		inst_tags.append((match.group().strip(), match.start(), match.end()))
+	
+	if verbose:
+		print(f"Found {len(inst_tags)} normalized INST tags:")
+		for tag, start, end in inst_tags:
+			print(f" Tag: '{tag}', position: {start}-{end}")
+
+	# Strategy 1: Extract clean list content (main approach)
+	list_content = _extract_clean_list_content(llm_response)
+	
+	if verbose:
+		print(f"Extracted list content: {list_content}")
+	
+	# Strategy 2: If no clean list found, try direct extraction from content after first [/INST]
+	if not list_content and inst_tags:
+		if verbose:
+			print("FALLBACK TO DIRECT EXTRACTION".center(100, "="))
+		
+		# Get content after the first [/INST] tag
+		first_inst_end = inst_tags[0].end()
+		response_content = llm_response[first_inst_end:].strip()
+		
+		if verbose:
+			print(f"Content after first [/INST]: {response_content}")
+		
+		# Look for the first proper Python list
+		python_list_patterns = [
+			r"\[\s*'[^']*'(?:\s*,\s*'[^']*')*\s*\]",
+			r'\[\s*"[^"]*"(?:\s*,\s*"[^"]*")*\s*\]',
+		]
+		
+		for pattern in python_list_patterns:
+			match = re.search(pattern, response_content)
+			if match:
+				list_content = match.group(0)
+				if 'keyword1' not in list_content and 'keyword2' not in list_content:
+					if verbose:
+						print(f"Found list in response content: {list_content}")
+					break
+	if not list_content:
+		if verbose:
+			print("\nError: No valid list content found.")
+		return None
+	
+	# Parse and post-process the list
+	try:
+		keywords_list = _parse_list_safely(list_content)
+		
+		if not keywords_list:
+			if verbose:
+				print("Error: No valid keywords found after parsing.")
+			return None
+		
+		# Post-process to remove duplicates and ensure quality
+		final_keywords = _postprocess_keywords(keywords_list)
+		
+		if verbose:
+			print(f"Final processed keywords: {final_keywords}\n")
+		
+		return final_keywords if final_keywords else None		
+	except Exception as e:
+		if verbose:
+			print(f"<!> Error parsing the list: {e}")
+			print(f"Problematic string: '{list_content}'")
+
+		return None
+
+def _llava_vlm_(response: str, verbose: bool = False) -> Optional[list]:
+		if verbose:
+				print(f"\n[DEBUG] Raw VLM output:\n{response}")
+		if not isinstance(response, str):
+				if verbose:
+						print("[ERROR] VLM output is not a string.")
+				return None
+
+		# --- Step 1: Try to locate 'ASSISTANT:' and extract the following Python list ---
+		assistant_split = response.split("ASSISTANT:")
+		if verbose:
+				print(f"[DEBUG] Split on 'ASSISTANT:': {len(assistant_split)} parts.")
+		
+		# If ASSISTANT: is found, focus parsing on the answer text after it
+		if len(assistant_split) > 1:
+				answer_part = assistant_split[-1].strip()
+				if verbose:
+						print(f"[DEBUG] Text after 'ASSISTANT:': {answer_part}")
+				# Try to find a list in the assistant's part
+				list_matches = re.findall(r"\[[^\[\]]+\]", answer_part)
+				if verbose:
+						print(f"[DEBUG] Found {len(list_matches)} python-like lists after ASSISTANT.")
+				if list_matches:
+						list_str = list_matches[0]  # In LLaVa, usually only one list follows
+						if verbose:
+								print(f"[DEBUG] Extracted list: {list_str}")
+						try:
+								keywords = ast.literal_eval(list_str)
+								if verbose:
+										print(f"[DEBUG] Parsed Python list: {keywords}")
+								if isinstance(keywords, list):
+										result = [str(k).strip() for k in keywords if isinstance(k, str)]
+										if verbose:
+												print(f"[INFO] Final parsed keywords: {result}")
+										return result
+						except Exception as e:
+								if verbose:
+										print("[ERROR] ast.literal_eval failed:", e)
+				# Fallback 1: extract quoted strings
+				candidates = re.findall(r"'([^']+)'", answer_part)
+				if verbose:
+						print(f"[DEBUG] Regex candidates:", candidates)
+				if candidates:
+						result = [str(x).strip() for x in candidates]
+						if verbose:
+								print("[INFO] Final parsed fallback (quotes) keywords: ", result)
+						return result
+				# Fallback 2: comma splitting
+				raw_split = [x.strip(" ,'\"]") for x in answer_part.split(",") if x.strip()]
+				if verbose:
+						print(f"[DEBUG] Comma split candidates:", raw_split)
+				if len(raw_split) > 1:
+						if verbose:
+								print("[INFO] Final last-resort (comma) keywords:", raw_split)
+						return raw_split
+		
+		# -- If parsing above fails --
+		if verbose:
+				print("[ERROR] Unable to parse any keywords from VLM output (LLaVa model).")
+		return None
+
 
 class AdaLoRALinear(torch.nn.Module):
     """
@@ -2148,6 +3924,1010 @@ def get_lora_clip(
 	return model
 #############################################
 
+# download, process and store image
+def _process_image_for_storage(
+		img_path: str,
+		target_size: tuple,
+		large_image_threshold_mb: float,
+		verbose: bool=False
+	) -> bool:
+	if not os.path.exists(img_path):
+		if verbose:
+			print(f"Image file not found for processing: {img_path}")
+		return False
+
+	file_size_bytes = os.path.getsize(img_path)
+	large_image_threshold_bytes = large_image_threshold_mb * 1024 * 1024
+
+	# If image is already small, just convert to JPEG and return
+	if file_size_bytes <= large_image_threshold_bytes:
+		if verbose:
+			print(f"\timage size: {file_size_bytes / 1024 / 1024:.2f} <= (threshold: {large_image_threshold_mb} MB) => stored unchanged.")
+		return True
+
+	if not isinstance(target_size, (tuple, list)) or len(target_size) != 2:
+		if verbose:
+			print(f"Invalid target_size: {target_size}. Must be a tuple/list of 2 integers.")
+		raise ValueError(f"Invalid target_size: {target_size}. Must be a tuple/list of 2 integers.")
+
+	try:
+		target_size = (int(target_size[0]), int(target_size[1]))
+	except (ValueError, TypeError) as e:
+		if verbose:
+			print(f"Invalid target_size: {target_size}. Must be a tuple/list of 2 integers. Error: {e}")
+		raise ValueError(f"Invalid target_size: {target_size}. Must be a tuple/list of 2 integers.") from e
+
+	try:
+		with Image.open(img_path) as img:
+			img = img.convert("RGB")
+			original_size = img.size
+			if file_size_bytes > large_image_threshold_bytes:
+				# Only thumbnail if current dimensions are larger than target size
+				if img.size[0] > target_size[0] or img.size[1] > target_size[1]:
+					if verbose:
+						print(
+							f"\tCreating thumbnail"
+							f"(Original dimensions: {original_size[0]}x{original_size[1]}, "
+							f"File size: {file_size_bytes / 1024 / 1024:.2f} MB) "
+							f"=> Target size: {target_size})"
+						)
+					img.thumbnail(target_size, resample=Image.Resampling.LANCZOS)
+					action_taken = "Thumbnailed"
+				else:
+					if verbose:
+						print(f"Large image {os.path.basename(img_path)} within target_size {target_size}. Converting to JPEG.")
+					action_taken = "only JPEG-ified"
+			img.save(
+				fp=img_path, # Overwrite the original file
+				format="JPEG",
+				quality=100,
+				optimize=True,
+				progressive=True,
+			)
+			new_file_size_bytes = os.path.getsize(img_path)
+			if verbose:
+				print(
+					f"\t{action_taken}"
+					f"(New size: {img.size[0]}x{img.size[1]}, "
+					f"New file size: {new_file_size_bytes / 1024 / 1024:.2f} MB)."
+				)
+		with Image.open(img_path) as img:
+			img.verify()
+		return True
+	except (IOError, SyntaxError, Image.DecompressionBombError) as e:
+		if verbose:
+			print(f"Error processing image {img_path} for thumbnail/optimization: {e}")
+		if os.path.exists(img_path):
+			os.remove(img_path)
+		return False
+	except Exception as e:
+		if verbose:
+			print(f"An unexpected error occurred during image processing for {img_path}: {e}")
+		if os.path.exists(img_path):
+			try:
+				os.remove(img_path)
+			except OSError as remove_error:
+				print(f"Failed to remove corrupted image {img_path}: {remove_error}")
+			os.remove(img_path)
+		return False
+
+def download_image(
+		row,
+		session, 
+		image_dir, 
+		total_rows,
+		retries=1, 
+		backoff_factor=0.5,
+		download_timeout=15,
+		enable_thumbnailing: bool = False,
+		thumbnail_size: tuple = (500, 500),
+		large_image_threshold_mb: float = 2.0,
+		verbose: bool = False,
+	):
+	t0 = time.time()
+	rIdx = row.name
+	image_url = row['img_url']
+	image_id = row['id']
+	image_path = os.path.join(image_dir, f"{image_id}.jpg")
+
+	headers = {
+		'Content-type': 'application/json',
+		'Accept': 'application/json; text/plain; */*',
+		'Cache-Control': 'no-cache',
+		'Connection': 'keep-alive',
+		'Pragma': 'no-cache',
+	}
+
+	# --- Step 1: Check if image already exists ---
+	if os.path.exists(image_path):
+		try:
+			with Image.open(image_path) as img:
+				img.verify()
+			if enable_thumbnailing:
+				if not _process_image_for_storage(
+					img_path=image_path, 
+					target_size=thumbnail_size, 
+					large_image_threshold_mb=large_image_threshold_mb, 
+					verbose=verbose
+				):
+					if verbose: print(f"Existing image {image_path} valid but re-processing failed. Re-downloading...")
+				else:
+					if verbose: print(f"{rIdx:<10}/ {total_rows:<10}{image_id:<150} (Skipping existing & processed) {time.time()-t0:.1f} s")
+					return True
+			else:
+				if verbose: print(f"{rIdx:<10}/ {total_rows:<10}{image_id:<150} (Skipping existing raw) {time.time()-t0:.1f} s")
+				return True
+		except (IOError, SyntaxError, Image.DecompressionBombError) as e:
+			print(f"Existing image {image_path} is invalid: {e}, re-downloading...")
+			os.remove(image_path)
+		except Exception as e:
+			print(f"Unexpected error checking {image_path}: {e}")
+			os.remove(image_path)
+
+	# --- Step 2: Attempt download ---
+	attempt = 0
+	while attempt < retries:
+		try:
+			# Try with SSL verification
+			response = session.get(
+				url=image_url, 
+				headers=headers,
+				timeout=download_timeout,
+			)
+			response.raise_for_status()
+		except requests.exceptions.SSLError as ssl_err:
+			print(f"[{rIdx}/{total_rows}] SSL error. Retrying without verification: {ssl_err}")
+			try:
+				response = session.get(
+					url=image_url,
+					headers=headers,
+					timeout=download_timeout, 
+					verify=False,
+				)
+				response.raise_for_status()
+			except Exception as fallback_err:
+				print(f"[{rIdx}/{total_rows}] Retry without verification failed: {fallback_err}")
+				attempt += 1
+				time.sleep(backoff_factor * (2 ** attempt))
+				continue  # Retry loop
+		except (RequestException, IOError) as e:
+			attempt += 1
+			print(f"<!> [{rIdx}/{total_rows}] {e}, retrying ({attempt}/{retries})")
+			time.sleep(backoff_factor * (2 ** attempt))
+			continue
+
+		try:
+			with open(image_path, 'wb') as f:
+				f.write(response.content)
+			with Image.open(image_path) as img:
+				img.verify()
+			if not _process_image_for_storage(
+				img_path=image_path, 
+				target_size=thumbnail_size, 
+				large_image_threshold_mb=large_image_threshold_mb, 
+				verbose=verbose
+			):
+				raise ValueError(f"Failed to process image {image_id} after download.")
+			if verbose: print(f"{rIdx:<10}/ {total_rows:<10}{image_id:<150}{time.time()-t0:.1f} s")
+			return True
+		except (SyntaxError, Image.DecompressionBombError, ValueError) as e:
+			print(f"[{rIdx}/{total_rows}] Downloaded image {image_id} is invalid: {e}")
+			break
+		except Exception as e:
+			print(f"[{rIdx}/{total_rows}] Unexpected error after download: {e}")
+			attempt += 1
+			time.sleep(backoff_factor * (2 ** attempt))
+
+	# --- Step 3: Clean up if failed ---
+	if os.path.exists(image_path):
+		if verbose: print(f"removing broken img: {image_path}")
+		os.remove(image_path)
+	
+	if verbose: print(f"[{rIdx}/{total_rows}] Failed downloading {image_id} after {retries} attempts.")
+
+	return False
+
+def get_synchronized_df_img(
+		df: pd.DataFrame, 
+		synched_fpath: str,
+		nw: int,
+		thumbnail_size: tuple=(1000, 1000),
+		large_image_threshold_mb: float=2.0,
+		enable_thumbnailing: bool=False,
+		TIMEOUT: int=30,
+	):
+	# synched_fpath = os.path.join(os.path.dirname(image_dir), "metadata_multi_label_synched.csv")
+	image_dir = os.path.join(os.path.dirname(synched_fpath), "images")
+	if os.path.exists(synched_fpath):
+		print(f"Found existing synchronized dataset at {synched_fpath}. Loading...")
+		return pd.read_csv(
+			filepath_or_buffer=synched_fpath,
+			on_bad_lines='skip',
+			dtype=dtypes,
+			low_memory=False,
+		)
+
+	print(f"Synchronizing {df.shape[0]} images using {nw} CPUs...")
+	if enable_thumbnailing:
+		print(f"Image processing enabled: images > {large_image_threshold_mb} MB will be thumbnailed to {thumbnail_size}.")
+	else:
+		print("Image processing disabled: raw images will be downloaded as is.")
+	print(f"Saving synchronized images to {image_dir}...")
+	successful_rows = [] # List to keep track of successful downloads
+	with requests.Session() as session:
+		with ThreadPoolExecutor(max_workers=nw) as executor:
+			futures = {
+				executor.submit(
+					download_image, 
+					row=row, 
+					session=session, 
+					image_dir=image_dir, 
+					total_rows=df.shape[0],
+					retries=2, 
+					backoff_factor=0.5,
+					download_timeout=TIMEOUT,
+					enable_thumbnailing=enable_thumbnailing,
+					thumbnail_size=thumbnail_size,
+					large_image_threshold_mb=large_image_threshold_mb,
+				): idx for idx, row in df.iterrows()
+			}
+			for future in as_completed(futures):
+				original_df_idx = futures[future]
+				try:
+					success = future.result() # (True/False) from download_image
+					if success:
+						successful_rows.append(original_df_idx) # Keep track of successfully downloaded rows
+				except Exception as e:
+					print(f"Unexpected error: {e} for {original_df_idx}")
+
+	print(f"<<>> Total successful image downloads: {len(successful_rows)}/{df.shape[0]}")
+
+	print(f"cleaning {type(df)} {df.shape} with {len(successful_rows)} succeeded downloaded images [functional URL]...")
+
+	syched_df = df.loc[successful_rows].copy() # keep only the successfully downloaded rows
+	print(f"syched_df: {type(syched_df)} {syched_df.shape} {list(syched_df.columns)}")
+
+	actual_files_in_dir = [f for f in os.listdir(image_dir) if os.path.isfile(os.path.join(image_dir, f))]
+	img_dir_size = sum(os.path.getsize(os.path.join(image_dir, f)) for f in actual_files_in_dir) * 1e-9  # GB
+
+	print(f"Dir: {image_dir} contains {len(actual_files_in_dir)} file(s) | total size: {img_dir_size:.1f} GB")
+
+	print(f"Saving synchronized dataset to {synched_fpath}...")
+	syched_df.to_csv(synched_fpath, index=False)
+	try:
+		syched_df.to_excel(synched_fpath.replace('.csv', '.xlsx'), index=False)
+	except Exception as e:
+		print(f"Failed to write Excel file: {e}")
+
+	return syched_df
+
+
+def _google_llm_response(model_id: str, input_prompt: str, llm_response: str, max_kws: int, verbose: bool = False) -> Optional[List[str]]:
+		print(f"Handling Google response [model_id: {model_id}]...")
+		print(f"Raw response (repr): {repr(llm_response)}")
+		
+		# Find all potential list-like structures
+		list_matches = re.findall(r"\[.*?\]", llm_response, re.DOTALL)
+		print(f"All bracketed matches: {list_matches}")
+		
+		# Look for a list with three quoted strings
+		list_match = re.search(
+				r"\[\s*['\"][^'\"]*['\"](?:\s*,\s*['\"][^'\"]*['\"]){2}\s*\]",
+				llm_response, re.DOTALL
+		)
+		
+		if list_match:
+				final_list_str = list_match.group(0)
+				print(f"Found potential list: '{final_list_str}'")
+		else:
+				print("Error: Could not find a valid list in the response.")
+				# attempt to extract comma-separated keywords
+				match = re.search(r"([\w\s\-]+(?:,\s*[\w\s\-]+){2,})", llm_response, re.DOTALL)
+				if match:
+						keywords = [kw.strip() for kw in match.group(1).split(',')]
+						keywords = [re.sub(r'[\d#]', '', kw).strip() for kw in keywords if kw.strip()]
+						processed_keywords = []
+						for kw in keywords[:3]:
+								cleaned_keyword = re.sub(r'\s+', ' ', kw)
+								if cleaned_keyword and cleaned_keyword not in processed_keywords:
+										processed_keywords.append(cleaned_keyword)
+						if len(processed_keywords) >= 3:
+								print(f"Fallback extracted {len(processed_keywords)} keywords: {processed_keywords}")
+								return processed_keywords[:3]
+				print("Error: No valid list or keywords found.")
+				return None
+		
+		# Clean the string (handle smart quotes and normalize)
+		cleaned_string = final_list_str.replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
+		print(f"Cleaned string: '{cleaned_string}'")
+		
+		# Parse the string into a Python list
+		try:
+				keywords_list = ast.literal_eval(cleaned_string)
+				# Validate: must be a list of strings
+				if not (isinstance(keywords_list, list) and all(isinstance(item, str) for item in keywords_list)):
+						print("Error: Extracted string is not a valid list of strings.")
+						return None
+				
+				# Post-process: remove numbers, special characters, and duplicates
+				processed_keywords = []
+				for keyword in keywords_list:
+						# Remove numbers and special characters
+						cleaned_keyword = re.sub(r'[\d#]', '', keyword).strip()
+						cleaned_keyword = re.sub(r'\s+', ' ', cleaned_keyword)
+						# Optionally exclude abbreviations (e.g., single letters or common historical abbreviations)
+						if len(cleaned_keyword) > 2 or cleaned_keyword.lower() not in {'u.s.', 'wwii', 'raf', 'nato', 'mt.'}:
+								if cleaned_keyword and cleaned_keyword not in processed_keywords:
+										processed_keywords.append(cleaned_keyword)
+				
+				if len(processed_keywords) > max_kws:
+					processed_keywords = processed_keywords[:max_kws]
+				
+				print(f"Successfully extracted {len(processed_keywords)} keywords: {processed_keywords}")
+				return processed_keywords
+		
+		except Exception as e:
+				print(f"Error parsing the list: {e}")
+				print(f"Problematic string: '{cleaned_string}'")
+				return None
+
+def _microsoft_llm_response(model_id: str, input_prompt: str, llm_response: str, max_kws: int, verbose: bool = False):
+		print(f"Handling Microsoft response model_id: {model_id}...")
+		
+		# The model output is at the end after the [/INST] tag
+		# Split by lines and look for the content after the last [/INST]
+		lines = llm_response.strip().split('\n')
+		
+		# Find the content after the last [/INST] tag
+		model_output = None
+		for i, line in enumerate(lines):
+				if '[/INST]' in line:
+						# Get everything after this line
+						model_output = '\n'.join(lines[i+1:]).strip()
+						break
+		
+		if not model_output:
+				print("Error: Could not find model output after [/INST] tag.")
+				return None
+		
+		print(f"Model output: {model_output}")
+		
+		# Look for the list in the model output
+		match = re.search(r"(\[.*?\])", model_output, re.DOTALL)
+		
+		if not match:
+				print("Error: Could not find a list in the Microsoft response.")
+				return None
+				
+		final_list_str = match.group(1)
+		print(f"Found list string: {final_list_str}")
+		
+		# Clean the string - replace single quotes with double quotes for JSON
+		cleaned_string = final_list_str.replace("'", '"')
+		
+		# Replace smart quotes with standard straight quotes
+		cleaned_string = cleaned_string.replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
+		
+		# Remove any apostrophes inside words (like "don't" -> "dont")
+		cleaned_string = re.sub(r'(\w)\'(\w)', r'\1\2', cleaned_string)
+
+		if cleaned_string == "[]":
+				print("Model returned an empty list.")
+				return []
+
+		try:
+				# Use json.loads to parse the JSON-like string
+				keywords_list = json.loads(cleaned_string)
+				
+				# Ensure the parsed result is a list of strings
+				if not (isinstance(keywords_list, list) and all(isinstance(item, str) for item in keywords_list)):
+						print("Error: Extracted string is not a valid list of strings.")
+						return None
+				
+				# Post-process to enforce rules
+				processed_keywords = []
+				for keyword in keywords_list:
+						# Remove numbers and special characters
+						cleaned_keyword = re.sub(r'[\d#]', '', keyword).strip()
+						cleaned_keyword = re.sub(r'\s+', ' ', cleaned_keyword)
+						
+						if cleaned_keyword and cleaned_keyword not in processed_keywords:
+								processed_keywords.append(cleaned_keyword)
+								
+				if len(processed_keywords) > max_kws:
+						processed_keywords = processed_keywords[:max_kws]
+						
+				if not processed_keywords:
+						print("Error: No valid keywords found after processing.")
+						return None
+						
+				print(f"Successfully extracted {len(processed_keywords)} keywords: {processed_keywords}")
+				return processed_keywords
+				
+		except json.JSONDecodeError as e:
+				print(f"Error parsing the list with JSON: {e}")
+				print(f"Problematic string: {cleaned_string}")
+				
+				# try ast.literal_eval if JSON fails
+				try:
+						import ast
+						keywords_list = ast.literal_eval(final_list_str)
+						if isinstance(keywords_list, list) and all(isinstance(item, str) for item in keywords_list):
+								print(f"Using ast fallback: {keywords_list}")
+								return keywords_list
+				except:
+						pass
+						
+				return None
+				
+		except Exception as e:
+				print(f"An unexpected error occurred: {e}")
+				return None
+
+def _mistral_llm_response(
+		model_id: str,
+		input_prompt: str,
+		llm_response: str,
+		max_kws: int,
+		verbose: bool = False
+) -> Optional[List[str]]:
+		"""
+		Extract and clean keywords from Mistral LLM response.
+
+		Returns:
+				List[str]: Cleaned keywords, or None if extraction fails
+		"""
+
+		# ------------------------------------------------------------------
+		# Helper: remove redundant subphrases like "Division" if
+		# "motorized Troops Division" is also present.
+		# Only removes single-token keywords that appear as a whole token
+		# inside another, longer keyword.
+		# ------------------------------------------------------------------
+		def dedupe_redundant_subphrases(keywords: List[str], verbose: bool = False) -> List[str]:
+				if not keywords:
+						return keywords
+
+				lowered = [k.lower() for k in keywords]
+				keep: List[str] = []
+
+				if verbose:
+						print("\n[DEBUG] Running dedupe_redundant_subphrases()")
+						print(f"[DEBUG]   Input keywords: {keywords}")
+
+				for i, (kw, kw_l) in enumerate(zip(keywords, lowered)):
+						tokens = kw_l.split()
+						redundant = False
+
+						# Only consider single-token keywords for now
+						if len(tokens) == 1:
+								for j, other_l in enumerate(lowered):
+										if j == i:
+												continue
+										other_tokens = other_l.split()
+										# If this single token appears as a whole token
+										# inside another, longer keyword, treat as redundant.
+										if kw_l in other_tokens and len(other_tokens) > 1:
+												redundant = True
+												if verbose:
+														print(f"[DEBUG]   '{kw}' → REJECTED as redundant (sub-token of '{keywords[j]}')")
+												break
+
+						if not redundant:
+								keep.append(kw)
+
+				if verbose:
+						print(f"[DEBUG]   Output keywords after redundancy dedupe: {keep}\n")
+
+				return keep
+
+		# ------------------------------------------------------------------
+		# Step 1: Find the list line
+		# ------------------------------------------------------------------
+		lines = llm_response.strip().split('\n')
+
+		if verbose:
+				print(f"[DEBUG] Split response into {len(lines)} lines")
+
+		list_line = None
+		for i, line in enumerate(lines):
+				line_stripped = line.strip()
+				if line_stripped.startswith('[') and line_stripped.endswith(']'):
+						list_line = line_stripped
+						if verbose:
+								print(f"[DEBUG] Found list at line {i}: {list_line}")
+						break
+
+		if not list_line:
+				if verbose:
+						print("[ERROR] Could not find a list pattern [...] in response")
+						print("[DEBUG] Last few lines inspected:")
+						for j, line in enumerate(lines[-5:]):  # show last 5 lines
+								print(f"  {j}: {repr(line[:100])}")
+				return None
+
+		# ------------------------------------------------------------------
+		# Step 2: Normalize quotes
+		# ------------------------------------------------------------------
+		quote_map = str.maketrans(
+				{
+						'“': '"',
+						'”': '"',
+						'‘': "'",
+						'’': "'",
+				}
+		)
+		cleaned_string = list_line.translate(quote_map)
+
+		if verbose:
+				print(f"[DEBUG] After quote normalization: {cleaned_string}")
+
+		# ------------------------------------------------------------------
+		# Step 3: Handle empty list
+		# ------------------------------------------------------------------
+		if cleaned_string == "[]":
+				if verbose:
+						print("[INFO] Model returned empty list []")
+				return []
+
+		# ------------------------------------------------------------------
+		# Step 4: Parse with ast.literal_eval
+		# ------------------------------------------------------------------
+		try:
+				keywords_list = ast.literal_eval(cleaned_string)
+				if verbose:
+						print(f"[DEBUG] ✓ ast.literal_eval succeeded")
+						print(f"[DEBUG]   Type: {type(keywords_list)}")
+						print(f"[DEBUG]   Raw content: {keywords_list}")
+		except Exception as e:
+				if verbose:
+						print(f"[ERROR] ast.literal_eval failed: {type(e).__name__}: {e}")
+						print(f"[DEBUG] Failed string: {cleaned_string}")
+				return None
+
+		# ------------------------------------------------------------------
+		# Step 5: Validate it's a list of strings
+		# ------------------------------------------------------------------
+		if not isinstance(keywords_list, list):
+				if verbose:
+						print(f"[ERROR] Parsed result is not a list (got {type(keywords_list)})")
+				return None
+
+		if not all(isinstance(item, str) for item in keywords_list):
+				if verbose:
+						print(f"[ERROR] List contains non-string items")
+						print(f"[DEBUG] Item types: {[type(x) for x in keywords_list]}")
+				return None
+
+		if verbose:
+				print(f"[DEBUG] Validated as list of {len(keywords_list)} strings")
+
+		# ------------------------------------------------------------------
+		# Step 6: Process keywords (numeric filter, cleaning, dedupe)
+		# ------------------------------------------------------------------
+		processed_keywords: List[str] = []
+
+		for i, keyword in enumerate(keywords_list):
+				original = keyword
+
+				# Reject keywords that are ONLY digits/special chars
+				# But preserve keywords like "MG 42", "StuG III", "3rd Infantry"
+				if re.fullmatch(r'[\d\s\-#]+', keyword.strip()):
+						if verbose:
+								print(f"[DEBUG] Item {i}: '{original}' → REJECTED (purely numeric/special)")
+						continue
+
+				# Clean: collapse whitespace, strip leading/trailing whitespace
+				# Do NOT strip digits that are part of the keyword
+				cleaned_keyword = re.sub(r'\s+', ' ', keyword).strip()
+
+				# Minimum length check
+				if len(cleaned_keyword) < 2:
+						if verbose:
+								print(f"[DEBUG] Item {i}: '{original}' → '{cleaned_keyword}' → REJECTED (too short)")
+						continue
+
+				# Check for duplicates (case-insensitive)
+				if cleaned_keyword.lower() in [k.lower() for k in processed_keywords]:
+						if verbose:
+								print(f"[DEBUG] Item {i}: '{original}' → '{cleaned_keyword}' → REJECTED (duplicate)")
+						continue
+
+				processed_keywords.append(cleaned_keyword)
+
+				if verbose:
+						if original != cleaned_keyword:
+								print(f"[DEBUG] Item {i}: '{original}' → '{cleaned_keyword}' → KEPT (cleaned)")
+						else:
+								print(f"[DEBUG] Item {i}: '{original}' → KEPT (unchanged)")
+
+				# Early stop if we've reached max_kws
+				if len(processed_keywords) >= max_kws:
+						if verbose:
+								print(f"[DEBUG] Reached max_kws={max_kws}, stopping further processing")
+						break
+
+		# ------------------------------------------------------------------
+		# Step 7: Redundancy reduction (subphrase dedupe)
+		# ------------------------------------------------------------------
+		if not processed_keywords:
+				if verbose:
+						print("[ERROR] No valid keywords remaining after initial processing")
+				return None
+
+		if verbose:
+				print(f"\n[DEBUG] Keywords before redundancy dedupe: {processed_keywords}")
+
+		deduped_keywords = dedupe_redundant_subphrases(processed_keywords, verbose=verbose)
+
+		# Safety: enforce max_kws again after dedupe (though it shouldn't increase)
+		final_keywords = deduped_keywords[:max_kws]
+
+		if not final_keywords:
+				if verbose:
+						print("[ERROR] No valid keywords remaining after redundancy dedupe")
+				return None
+
+		if verbose:
+				print(f"\n[SUCCESS] Extracted {len(final_keywords)} keyword(s): {final_keywords}\n")
+
+		return final_keywords
+
+def _nousresearch_llm_response(model_id: str, input_prompt: str, llm_response: str, max_kws: int, verbose: bool = False):
+		print(f"Handling NousResearch response model_id: {model_id}...")
+		print(f"Raw response (repr): {repr(llm_response)}")  # Debug hidden characters
+		
+		# Strip code block markers (```python
+		cleaned_response = re.sub(r'```python\n|```', '', llm_response)
+		print(f"Cleaned response (repr): {repr(cleaned_response)}")  # Debug
+		
+		# Look for a list with three quoted strings after [/INST]
+		list_match = re.search(
+				r"\[/INST\][\s\S]*?(\[\s*['\"][^'\"]*['\"](?:\s*,\s*['\"][^'\"]*['\"]){2}\s*\])",
+				cleaned_response, re.DOTALL
+		)
+		
+		if list_match:
+				potential_list = list_match.group(1)
+				print(f"Found potential list: '{potential_list}'")
+		else:
+				print("Error: Could not find any complete list patterns after [/INST].")
+				# try any three-item list
+				list_match = re.search(
+						r"\[\s*['\"][^'\"]*['\"](?:\s*,\s*['\"][^'\"]*['\"]){2}\s*\]",
+						cleaned_response, re.DOTALL
+				)
+				if list_match:
+						potential_list = list_match.group(0)
+						print(f"Fallback list: '{potential_list}'")
+				else:
+						print("Error: No list found in response.")
+						# Debug all bracketed matches
+						matches = re.findall(r"\[.*?\]", cleaned_response, re.DOTALL)
+						print(f"All bracketed matches: {matches}")
+						return None
+		
+		# Clean the string - replace smart quotes and normalize
+		cleaned_string = potential_list.replace("“", '"').replace("”", '"').replace("’", "'").replace("‘", "'")
+		print(f"Cleaned string: '{cleaned_string}'")
+		
+		# Use ast.literal_eval to parse the string into a Python list
+		try:
+				keywords_list = ast.literal_eval(cleaned_string)
+				# Validate: must be a list of strings
+				if not (isinstance(keywords_list, list) and all(isinstance(item, str) for item in keywords_list)):
+						print("Error: Extracted string is not a valid list of strings.")
+						return None
+				
+				# Post-process: remove numbers, special characters, and duplicates
+				processed_keywords = []
+				for keyword in keywords_list:
+						cleaned_keyword = re.sub(r'[\d#]', '', keyword).strip()
+						cleaned_keyword = re.sub(r'\s+', ' ', cleaned_keyword)
+						if cleaned_keyword and cleaned_keyword not in processed_keywords:
+								processed_keywords.append(cleaned_keyword)
+				
+				if len(processed_keywords) > max_kws:
+					processed_keywords = processed_keywords[:max_kws]
+				if not processed_keywords:
+					if verbose:
+						print("Error: No valid keywords found after processing.")
+					return None
+				if verbose:
+					print(f"Successfully extracted {len(processed_keywords)} keywords: {processed_keywords}")
+				return processed_keywords
+		
+		except Exception as e:
+				print(f"Error parsing the list: {e}")
+				print(f"Problematic string: '{cleaned_string}'")
+				# Fallback: extract quoted strings
+				try:
+						manual_matches = re.findall(r"['\"]([^'\"]+)['\"]", cleaned_string)
+						if manual_matches:
+								print(f"Using fallback extraction: {manual_matches}")
+								return manual_matches[:3]
+						return None
+				except Exception as e:
+						print(f"Fallback extraction failed: {e}")
+						return None
+
+def _llama_llm_response(model_id: str, input_prompt: str, llm_response: str, max_kws: int, verbose: bool = True):
+		def _normalize_text(s: str) -> str:
+				"""Normalize text for comparison (case folding, unicode normalization)."""
+				s = unicodedata.normalize("NFKD", s or "")
+				s = "".join(ch for ch in s if not unicodedata.combining(ch))
+				return s.lower()
+
+		def _token_clean(s: str) -> str:
+				"""Clean and normalize whitespace."""
+				return re.sub(r"\s+", " ", (s or "").strip())
+
+		def _has_letter(s: str) -> bool:
+				"""Check if string contains letters."""
+				return bool(re.search(r"[A-Za-z]", s or ""))
+
+		def _is_punct_only(s: str) -> bool:
+				"""Check if string contains only punctuation."""
+				return bool(s) and bool(re.fullmatch(r"[\W_]+", s))
+
+		def _looks_like_abbrev(s: str) -> bool:
+				"""Heuristic to detect real abbreviations, not normal capitalized words."""
+				# Skip if it's a normal multi-word phrase
+				if ' ' in s:
+						return False
+						
+				# Real abbreviation patterns
+				if re.search(r"[.&/]", s):
+						return True
+						
+				# Very short ALL-CAPS (2-3 chars) like "USA", "UK", "SP"
+				if len(s) <= 3 and s.isalpha() and s.isupper():
+						return True
+						
+				# Mixed case words are not abbreviations
+				if not s.isupper():
+						return False
+						
+				# For longer ALL-CAPS words, only flag if they look like acronyms
+				# (all caps with no vowels or very short)
+				if len(s) >= 4 and s.isupper():
+						# Check if it has vowels - if no vowels, likely acronym
+						if not re.search(r'[AEIOUaeiou]', s):
+								return True
+						# Otherwise, it's probably just a capitalized normal word
+						return False
+						
+				return False
+
+		# Temporal words to exclude
+		TEMPORAL_WORDS = {
+				"morning", "evening", "night", "noon", "midnight", "today", "yesterday", "tomorrow",
+				"spring", "summer", "autumn", "fall", "winter", "weekend", "weekday",
+				"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+				"january", "february", "march", "april", "may", "june", "july", "august", 
+				"september", "october", "november", "december", "century", "centuries", 
+				"year", "years", "month", "months", "day", "days", "decade", "decades", "time", "times"
+		}
+
+		def _is_temporal_word(s: str) -> bool:
+				"""Check if word is temporal."""
+				return _normalize_text(s) in TEMPORAL_WORDS
+
+		def _is_valid_form(s: str) -> bool:
+				"""Validate keyword form."""
+				if not s:
+						return False
+				if len(s) < 2:
+						return False
+				if _is_punct_only(s):
+						return False
+				if re.search(r"\d", s):
+						return False
+				if not _has_letter(s):
+						return False
+				if _is_temporal_word(s):
+						return False
+						
+				tokens = [t for t in re.split(r"\s+", s) if t]
+				if tokens and all(_normalize_text(t) in STOPWORDS for t in tokens):
+						return False
+						
+				if _looks_like_abbrev(s):
+						return False
+						
+				return True
+
+		def _appears_in_description(candidate: str, description_text: str) -> bool:
+				"""Check if keyword appears in original description with flexible matching."""
+				if not description_text:
+						return True
+						
+				cand_norm = _normalize_text(candidate)
+				desc_norm = _normalize_text(description_text)
+				
+				# Direct substring match
+				if cand_norm in desc_norm:
+						return True
+						
+				# Word-level matching for multi-word keywords
+				cand_words = cand_norm.split()
+				desc_words = desc_norm.split()
+				
+				# Check if all words in candidate appear in description
+				if all(any(cand_word in desc_word for desc_word in desc_words) for cand_word in cand_words):
+						return True
+						
+				# Check for partial matches
+				for desc_word in desc_words:
+						if any(cand_word in desc_word for cand_word in cand_words):
+								return True
+								
+				return False
+
+		# ---------- Response Extraction Utilities ----------
+		def _after_last_inst(text: str) -> str:
+				"""Extract content after last [/INST] tag."""
+				matches = list(re.finditer(r"\[/INST\]", text or ""))
+				if not matches:
+						return (text or "").strip()
+				return text[matches[-1].end():].strip()
+
+		def _before_last_inst(text: str) -> str:
+				"""Extract content before last [/INST] tag."""
+				matches = list(re.finditer(r"\[/INST\]", text or ""))
+				if not matches:
+						return (text or "").strip()
+				return text[:matches[-1].start()].strip()
+
+		def _strip_codeblocks(s: str) -> str:
+				"""Remove code blocks from text."""
+				s = re.sub(r"```.*?```", "", s or "", flags=re.DOTALL)
+				s = re.sub(r"`[^`]*`", "", s)
+				return s
+
+		# ---------- Parsing Strategies ----------
+		def _parse_python_lists(s: str):
+				"""Find and parse Python list literals."""
+				pattern = r"\[\s*(?:(['\"])(?:(?:(?!\1).)*)\1\s*(?:,\s*(['\"])(?:(?:(?!\2).)*)\2\s*)*)?\]"
+				for m in re.finditer(pattern, s or "", flags=re.DOTALL):
+						yield s[m.start():m.end()]
+
+		def _parse_bullet_lists(s: str) -> List[str]:
+				"""Parse various bullet list formats."""
+				items = []
+				for line in (s or "").splitlines():
+						line = line.strip()
+						if not line:
+								continue
+						
+						# Match various bullet formats: -, *, •, numbers
+						bullet_match = re.match(r"^([-*•\u2022\u2023\u2043]|\d+[\.\)])\s+(.+)", line)
+						if bullet_match:
+								item = bullet_match.group(2).strip()
+								# Clean up any trailing explanations
+								item = re.sub(r"\s*[-–—].*$", "", item)
+								item = re.sub(r"\s*[.:].*$", "", item)
+								# Remove markdown formatting
+								item = re.sub(r"\*\*", "", item)
+								item = re.sub(r"\*", "", item)
+								if item and len(item) > 1:
+										items.append(item)
+				return items
+
+		def _postprocess_keywords(candidates: List[str], description_text: str) -> List[str]:
+				"""Post-process and validate keywords."""
+				out = []
+				seen = set()
+				
+				for kw in candidates:
+						kw = _token_clean(kw)
+						
+						if not _is_valid_form(kw):
+								continue
+						if not _appears_in_description(kw, description_text):
+								continue
+						
+						key = _normalize_text(kw)
+						if key in seen:
+								continue
+								
+						seen.add(key)
+						out.append(kw)
+						
+						if len(out) >= max_kws:
+								break
+								
+				return out
+
+		def _extract_description(text: str) -> str:
+				"""Extract the original description from prompt."""
+				pre = _before_last_inst(text or "")
+				
+				# Try to find the description before rules
+				patterns = [
+						r"Given the description below[^:\n]*[:\n]\s*(.*?)\n\s*\*\*Rules",
+						r"Given the description below[^:\n]*[:\n]\s*(.*)",
+				]
+				
+				for pat in patterns:
+						m = re.search(pat, pre, flags=re.DOTALL | re.IGNORECASE)
+						if m:
+								candidate = m.group(1).strip()
+								if len(candidate) >= 15:
+										return candidate
+				
+				# Fallback: take last paragraph before rules
+				parts = re.split(r"\*\*Rules\*\*", pre, flags=re.IGNORECASE)
+				head = parts[0] if parts else pre
+				paras = [p.strip() for p in re.split(r"\n{2,}", head) if p.strip()]
+				if paras:
+						return paras[-1]
+						
+				return ""
+
+		# ---------- Main Parsing Logic ----------
+		if verbose:
+				print("=" * 100)
+				print(f"Processing Llama response from: {model_id}")
+				print("=" * 100)
+
+		# Extract description for validation
+		desc_for_validation = input_prompt or ""
+		if (not desc_for_validation) or ("[INST]" in desc_for_validation) or ("**Rules**" in desc_for_validation):
+				extracted_desc = _extract_description(llm_response or "")
+				if extracted_desc:
+						desc_for_validation = extracted_desc
+						if verbose:
+								print(f"Recovered description: {desc_for_validation}")
+				else:
+						if verbose:
+								print("Using provided description as-is.")
+
+		# Get content after last [/INST] tag
+		content_after = _after_last_inst(llm_response or "")
+		if verbose:
+				print(f"Content after [/INST]: {repr(content_after[:200])}...")
+
+		# Clean content
+		content_clean = _strip_codeblocks(content_after)
+
+		# Strategy 1: Python List Literals
+		if verbose:
+				print("\n[STRATEGY 1] Searching for Python lists...")
+		
+		list_candidates = list(_parse_python_lists(content_after))
+		for list_str in reversed(list_candidates):
+				try:
+						cleaned = list_str.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'")
+						parsed = ast.literal_eval(cleaned)
+						if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+								result = _postprocess_keywords(parsed, desc_for_validation)
+								if result:
+										if verbose:
+												print(f"✓ Found Python list: {result}")
+										return result
+				except Exception as e:
+						if verbose:
+								print(f"  List parse failed: {e}")
+
+		# Strategy 2: Bullet Lists
+		if verbose:
+				print("\n[STRATEGY 2] Searching for bullet lists...")
+		
+		bullets = _parse_bullet_lists(content_clean)
+		if bullets:
+				if verbose:
+						print(f"  Found {len(bullets)} bullet items")
+				result = _postprocess_keywords(bullets, desc_for_validation)
+				if result:
+						if verbose:
+								print(f"✓ Extracted from bullets: {result}")
+						return result
+
+		if verbose:
+				print("\n❌ No valid keywords extracted")
+		
+		return None
 
 
 class EarlyStoppingOld:
@@ -3181,8 +5961,88 @@ def get_single_label_head_torso_tail_samples_composite(
     return flat_i2t, t2i_queries
 
 
+##############################################################################################################################
+# MediaPipe Language Detector: Not good for short texts:
+from mediapipe.tasks import python
+language_detector = "language_detector.tflite"
+if language_detector not in os.listdir():
+	print(f"Downloading {language_detector} [takes a while]...")
+	url = f"https://storage.googleapis.com/mediapipe-models/language_detector/language_detector/float32/1/{language_detector}"
+	urllib.request.urlretrieve(url, language_detector)
+print("Running mediapipe Language Detector on CPU...")
+base_options = python.BaseOptions(model_asset_path=language_detector)
+options = python.text.LanguageDetectorOptions(base_options=base_options)
+detector_model = python.text.LanguageDetector.create_from_options(options)
 
+# FastText: Good for short texts:
+import fasttext
+FastText_Language_Identification = "lid.176.bin"
+if FastText_Language_Identification not in os.listdir():
+	print(f"Downloading {FastText_Language_Identification} [takes	a while]...")
+	url = f"https://dl.fbaipublicfiles.com/fasttext/supervised-models/{FastText_Language_Identification}"
+	urllib.request.urlretrieve(url, FastText_Language_Identification)
+print("Loading FastText Language Identification Model...")
+ft_model = fasttext.load_model(FastText_Language_Identification)
 
+def is_english(
+	text: str, 
+	detector_model: fasttext.FastText._FastText=ft_model,
+	confidence_threshold: float = 0.4,
+	verbose: bool = False,
+) -> bool:
+	"""
+		Detects if text is in English using fasttext 
+	"""
+	if not text or not text.strip():
+		return False
+	
+	try:
+		# Clean text for better detection
+		cleaned_text = " ".join(text.split())
+		
+		# Predict language
+		predictions = detector_model.predict(cleaned_text, k=1)
+		if verbose:
+			print(f"\nchecking if text is in English:")
+			print(f"{cleaned_text}") 
+			print(f"Predictions: {predictions}")
+			print(f"-"*70)
+		detected_lang = predictions[0][0].replace('__label__', '')
+		confidence = predictions[1][0]
+		
+		# Check if English with sufficient confidence
+		is_en = detected_lang == 'en' and confidence >= confidence_threshold
+		
+		return is_en
+	except Exception as e:
+		print(f"Language detection error for text: '{text}'\n{e}")
+		return False
+
+def is_english(
+		text: str, 
+		detector_model: python.text.LanguageDetector=detector_model,
+		confidence_threshold: float = 0.3,
+		verbose: bool = True,
+	) -> bool:
+	""" Detects if text is in English using MediaPipe """
+	if not text or not text.strip():
+		return False
+	
+	try:
+		# Clean text for better detection
+		cleaned_text = text.strip().replace('\n', ' ').replace('\r', ' ')
+		
+		# Detect language
+		detection_result = detector_model.detect(cleaned_text)
+		if verbose: print(f"Detection result: {detection_result}")
+		top_detection = detection_result.detections[0]
+		is_en = (top_detection.language_code == 'en' and top_detection.probability >= confidence_threshold)
+		return is_en
+		
+	except Exception as e:
+		print(f"Language detection error: {text}\n{e}")
+		return False
+##############################################################################################################################
 
 @torch.no_grad()
 def get_validation_metrics_old(

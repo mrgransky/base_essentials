@@ -1,9 +1,9 @@
 1. Connect to SLURM account from Local machine:
 $ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -vi $HOME/.ssh/narvi_key alijani@narvi.tut.fi
 $ ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 ubuntu@128.214.254.157
+$ ssh ubuntu@128.214.254.157
 $ ssh alijanif@puhti.csc.fi
 $ ssh alijanif@mahti.csc.fi
-$ ssh ubuntu@128.214.254.157
 $ ssh alijanif@lumi.csc.fi
 
 # to access your Django app from VM
@@ -30,9 +30,9 @@ $ python manage.py runserver 0.0.0.0:9000
 
 # LUMI activate python
 $ module load cray-python
-# module list 	List currently loaded modules.
-# module avail 	List available packages.
-# module spider 	List available packages in a different format.
+# module list 	# List currently loaded modules.
+# module avail 	# List available packages.
+# module spider # List available packages in a different format.
 # module help [modulefile] 	Description of specified module.
 # module show [modulefile] 	Displays information about specified module, including environment changes, dependencies, software version and path.
 # module load [modulefile] 	Loads module or specifies which dependencies have not been loaded.
@@ -42,16 +42,14 @@ $ module load cray-python
 $ cat /etc/os-release
 
 # run interactive [Puhti]:
-$ srun -J interactive_gpu_test --account=project_2014707 --partition=gputest --gres=gpu:v100:1 --time=0-00:15:00 --mem=64G --cpus-per-task=4 --pty /bin/bash -i
+$ srun -J interactive_gpu_test --account=project_2014707 --partition=gputest --gres=gpu:v100:4 --time=0-00:15:00 --mem=64G --cpus-per-task=4 --pty /bin/bash -i
 $ srun -J interactive_cpu_test --account=project_2009043 --partition=interactive --time=00-03:15:00 --mem=169G --ntasks=1 --cpus-per-task=20 --pty /bin/bash -i
 
-
 # run interactive gpu [Mahti]:
-$ srun -J gpu_interactive_test --account=project_2004072 --partition=gputest --gres=gpu:a100:1 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
+$ srun -J gpu_interactive_test --account=project_2014707 --partition=gputest --gres=gpu:a100:1 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
 
-# run interactive gpu [Narvi]:
-$ srun -J gpu_interactive  --partition=test --gres=gpu:teslav100:1 --time=00-04:00:00 --mem=8G --constraint=gpumem_16 --cpus-per-task=8 --pty /bin/bash -i
-$ srun -J gpu_interactive  --partition=gpu --gres=gpu:teslap100:1 --time=00-01:00:00 --mem=8G --constraint=gpumem_12 --cpus-per-task=4 --pty /bin/bash -i
+# run interactive gpu [LUMI]:
+$ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --gres=gpu:mi250:1 --time=0-02:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
 
 2. mount working_folders from narvi computer to local: (type in local machine)
 	$ sshfs -o IdentityFile=/home/xenial/narvi_key/xenial-narvi-key alijani@narvi.tut.fi:example_folder /home/xenial/narvi_ws/
@@ -139,10 +137,16 @@ $ srun -J gpu_interactive  --partition=gpu --gres=gpu:teslap100:1 --time=00-01:0
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/SMU_1900-01-01_1970-12-31/*.xlsx $HOME/datasets/trash/results/smu -vv
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/EUROPEANA_1900-01-01_1970-12-31/*.xlsx $HOME/datasets/trash/results/eu -vv
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02/*.xlsx $HOME/datasets/trash/results/wwii -vv
-	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/*.xlsx $HOME/datasets/trash/results/h4 -vv
-
-	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4 -vv
 	
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4 -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4 -vv
+	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/datasets/WW_DATASETs/SMU_1900-01-01_1970-12-31/outputs $HOME/datasets/trash/results/smu -vv
+	
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
+	
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_llm_keywords.xlsx $HOME/datasets/trash/results/h4 -vv
+
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORICAL_ARCHIVES/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:~/WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:~/WS_Farid/ImACCESS/clip/*.png $HOME/datasets/trash/results/ -vv
@@ -223,9 +227,12 @@ $ srun -J gpu_interactive  --partition=gpu --gres=gpu:teslap100:1 --time=00-01:0
 	$ head /scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multimodal.csv | csvcut -c img_url,multimodal_labels
 	$ csvcut -c img_url,multimodal_labels /scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multimodal.csv | less
 
+	# count number of rows in a file:
+	$ cat FILE_NAME  | wc -l
+	
 	# Create a new csv file:
-	$ head -n 170 metadata_multi_label.csv > test_medium.csv # first N rows
-	$ (head -n 1 metadata_multi_label.csv && tail -n 19 metadata_multi_label.csv) > test.csv # first row + last N rows
+	$ head -n 570 metadata_multi_label.csv > test_medium.csv # first N rows
+	$ (head -n 1 metadata_multi_label.csv && tail -n 31 metadata_multi_label.csv) > test.csv # first row + last N rows
 	
 	# update all packages in a virtual env 
 	$ conda update --all
@@ -252,9 +259,14 @@ $ srun -J gpu_interactive  --partition=gpu --gres=gpu:teslap100:1 --time=00-01:0
 	$ pip list
 	$ pip show numpy # check versions and info
 
-	$ python -c "import caffe; caffe.set_mode_gpu(); caffe.set_device(0)"
-	
+	# Installing torch
+	$ pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+
+
+	$ python -c "import platform, os; print(platform.libc_ver()); print(os.uname()); print(platform.platform())"
+
 	$ python -c "import torch; import transformers; print(torch.__version__); print(torch.cuda.is_available()); print(torch.cuda.current_device()); print(torch.cuda.get_device_name(torch.cuda.current_device()));print(transformers.__version__)"
+	$ python -c "import flash_attn; print(flash_attn.__version__)"
 	
 	source /projappl/project_2004072/miniconda3/etc/profile.d/conda.sh
 
@@ -360,6 +372,8 @@ $ find Nordland/results/VGG16/*.csv -mtime -3 -exec rm {} +
 $ tree --du -h /tmp
 $ sudo rm -rfv /tmp/pymp-*
 $ ls -la /tmp/pymp-* 2>/dev/null || echo "All cleaned up!"
+$ ls -lSh # Sorts by size and displays the sizes in a human-readable format
+
 ########################## SLURM ##########################
 
 ########################## VSCODE ##########################
@@ -504,6 +518,7 @@ $ kill PID_NUMBER
 # Ubuntu:
 
 # delete file delete list files from nikeQ_30_xxx.txt to nikeQ_59_xxx.txt
+$ ls -l /scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_chunk_{0..24}.csv
 $ rm -rfv /scratch/project_2004072/Nationalbiblioteket/trash/NLF_logs/nikeQ_{30..60}_*.out
 
 # delete all files in a directory before a certain date (older than N days), using find command in combination with rm.
