@@ -232,6 +232,7 @@ pip install \
 	natsort \
 	openpyxl \
 	csvkit \
+	fastcluster \
 	certifi \
 	sentencepiece
 

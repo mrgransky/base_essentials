@@ -1,0 +1,266 @@
+armored fighting vehicle
+naval aircraft factory
+naval air station
+naval air base
+armored personnel carrier
+infantry fighting vehicle
+allied air attack
+anti personnel mine
+anti-personnel mine
+self propelled gun
+self propelled artillery
+water based aircraft
+air force personnel
+air force commander
+Pearl Harbor attack
+Treaty of Versailles
+Battle of the Bulge
+special forces commander
+theater commander
+group commander
+division commander
+corps commander
+submarine commander
+naval commander
+army commander
+resistance commander
+intelligence commander
+logistics commander
+air force base
+air force station
+artillery tractor
+naval hospital
+naval training
+naval ship
+naval vessel
+naval warship
+naval mine
+guided missile
+ballistic missile
+red cross
+Flying Boat
+flame thrower
+victory bond
+war bond
+concentration camp
+infantry camp
+swimming camp
+fishing camp
+construction camp
+trailer camp
+winter camp
+military camp
+allied invasion
+normandy invasion
+train station
+power station
+Power Plant
+tanker aircraft
+attack aircraft
+fighter aircraft
+bomber aircraft
+trainer aircraft
+transport aircraft
+light bomber
+fighter bomber
+strike fighter
+american tank
+rifle grenade
+german tank
+french tank
+english tank
+british tank
+anti aircraft
+war crimes
+mass atrocities
+trench warfare
+Manufacturing Plant
+construction equipment
+infrastructure construction
+rail construction
+dam construction
+tunnel construction
+allied powers
+allied forces
+air base
+reconnaissance aircraft
+surveillance aircraft
+military aircraft
+military airbase
+military airfield
+military airport
+airplane crash
+air station
+Air bomb
+air raid
+air strike
+air attack
+Air assault
+Flag Raising
+Manhattan Project
+Eastern Front
+surge drum
+surge pool
+surge tank
+Water Tank
+soviet union
+Naval Officer
+halftrack vehicle
+half track vehicle
+half-track vehicle
+military vehicle
+army vehicle
+Aerial bomb
+flying bomb
+Aerial warfare
+Aerial View
+Army Base
+Army hospital
+military base
+military leader
+military unit
+military museum
+military men
+military personnel
+military ship
+military boat
+military parade
+Medical aid
+Medical service
+first aid
+Coast Guard
+hospital base
+hospital ship
+hospital train
+military hospital
+Kitchen Truck
+Railroad Truck
+fire truck
+Line Truck
+gas truck
+Freight Truck
+Dump Truck
+Maintenance Truck
+Clinic Truck
+army truck
+army museum
+military truck
+afrika korps
+flying fortress
+vice president
+Prime Minister
+health professional
+bombing attack
+atomic bomb
+Nuremberg Trial
+Assault gun
+Ballon gun
+Machine gun
+Mortar gun
+volley gun
+field gun
+mountain gun
+land mine
+memorial day
+Decoration Day
+National Day
+light station
+light house
+half track
+ground forces
+infantry weapon
+explosive weapon
+Higgins boat
+landing craft
+V-E Day
+V-J Day
+anti tank
+anti-tank
+watch tower
+watchtower
+antitank
+fortification
+accident
+Wreck
+panzer
+howitzer
+Airstrike
+Waffen
+bombardment
+massacre
+victims
+atrocities
+D-Day
+U-boat
+troops
+holocaust
+kriegsmarine
+submarine
+Grossdeutschland
+bombing
+Helicopter
+Floatplane
+seaplane
+airbase
+Storehouse
+lighthouse
+Sailboat
+regatta
+cemetery
+graveyard
+explosion
+Artillery
+grenade
+firearm
+rifle
+knives
+bayonet
+flamethrower
+aircraft
+soldier
+Infantry
+Animal
+aeroplane
+airplane
+rationing
+Rocket
+prisoners
+Sergeant
+Admiral
+Ambulance
+cannon
+ambassador
+projectile
+airport
+Anniversary
+exile
+evacuation
+civilians
+nurse
+doctor
+dentist
+surgeon
+embassy
+reservoir
+refugee
+president
+migration
+Border
+shovel
+hospital
+locomotive
+railway
+railroad
+captain
+Minesweeper vessel
+Minesweeper ship
+Ceremony
+Celebration
+ussr
+blitz
+banishment
+aviator
+pilot
+landmine
+marines
+watercraft

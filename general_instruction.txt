@@ -41,14 +41,19 @@ $ module load cray-python
 # info about OS:
 $ cat /etc/os-release
 
-# run interactive [Puhti]:
+# run interactive gpu [Puhti]:
 $ srun -J interactive_gpu_test --account=project_2014707 --partition=gputest --gres=gpu:v100:4 --time=0-00:15:00 --mem=64G --cpus-per-task=4 --pty /bin/bash -i
-$ srun -J interactive_cpu_test --account=project_2009043 --partition=interactive --time=00-03:15:00 --mem=169G --ntasks=1 --cpus-per-task=20 --pty /bin/bash -i
-
 # run interactive gpu [Mahti]:
-$ srun -J gpu_interactive_test --account=project_2014707 --partition=gputest --gres=gpu:a100:1 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
+$ srun -J gpu_interactive_test --account=project_2009043 --partition=gputest --gres=gpu:a100:4 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
 
-# run interactive gpu [LUMI]:
+# Puhti:
+$ srun -J interactive_gpu --account=project_2009043 --partition=gpu --gres=gpu:v100:4 --time=0-03:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
+# Mahti:
+$ srun -J interactive_gpu --account=project_2014707 --partition=gpusmall --gres=gpu:a100:1 --time=0-23:15:00 --mem=64G --cpus-per-task=20 --pty /bin/bash -i
+
+$ srun -J interactive_cpu --account=project_2004072 --partition=interactive --time=00-13:00:00 --mem=73G --ntasks=1 --cpus-per-task=8 --pty /bin/bash -i
+
+# LUMI:
 $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --gres=gpu:mi250:1 --time=0-02:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
 
 2. mount working_folders from narvi computer to local: (type in local machine)
@@ -77,13 +82,14 @@ $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --g
 		token pass from remote terminal 
 		
 5. copy from local -> server:
-	# Narvi:
-	$ rsync -avzh --stats --progress -e "ssh -i $HOME/.ssh/narvi_key" /home/xenial/Datasets/Nationalbiblioteket/NLF_Pseudonymized_Logs alijani@narvi.tut.fi:/lustre/sgn-data/vision/
-	
 	# Puhti:
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Oxford_RobotCar/rtk/2015-11-12-11-22-05/rtk.csv alijanif@puhti.csc.fi:/scratch/project_2004072/OxfordRobotCar/2015-11-12-11-22-05/gps/
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Nationalbiblioteket/*.zip alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket
 	$ rsync -azhm --stats --progress $HOME/datasets/MS_COCO alijanif@puhti.csc.fi:/scratch/project_2004072/IMG_Captioning & > /dev/null # no prininting in terminal
+	$ rsync -azhm --stats --progress $HOME/datasets/WW_DATASETs/WWII_1939-09-01_1945-09-02/hits alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02
+
+	# Mahti:
+	$ rsync -azhm --stats --progress $HOME/datasets/WW_DATASETs/WWII_1939-09-01_1945-09-02/hits alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02
 
 	# local laptop => Puhti: [must be executed in local laptop terminal]:
 	$ rsync -avzhm --stats --progress $HOME/datasets/Nationalbiblioteket/dataframes_x732/*.json alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732 -vv
@@ -96,7 +102,8 @@ $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --g
 	# local laptop => Pouta
 	$ rsync -avzh --stats --progress $HOME/datasets/compressed_concatenated_SPMs/*.tar.gz ubuntu@128.214.254.157:/media/volume/Nationalbiblioteket/compressed_concatenated_SPMs
 	$ rsync -avzh --stats --progress $HOME/datasets/sentinel2-l1c* ubuntu@128.214.254.157:/media/volume/datasets	
-	$ rsync -avzh --stats --progress $HOME/datasets/Nationalbiblioteket ubuntu@128.214.254.157:/media/volume/datasets	
+	$ rsync -avzh --stats --progress $HOME/datasets//home/farid/datasets/WW_DATASETs/WWII_1939-09-01_1945-09-02 ubuntu@128.214.254.157:/media/volume/datasets	
+	$ rsync -avzh --stats --progress $HOME/datasets/WW_DATASETs/WWII_1939-09-01_1945-09-02/images alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02
 	
 	# openpose caffemodels:
 	$ rsync -avzh --stats --progress $HOME/WS_Farid/ImACCESS/openpose/models ubuntu@128.214.254.157:WS_Farid/ImACCESS/openpose
@@ -127,6 +134,20 @@ $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --g
 
 6. copy from server -> local:
 	# To local laptop (must be executed locally):
+	# Puhti:
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/*_h4.txt $HOME/datasets/trash/logs -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/inference $HOME/datasets/trash/results/h4
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/*.png $HOME/datasets/trash/results/h4
+
+	# Mahti:
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/*_h4.txt $HOME/datasets/trash/logs -vv
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/inference $HOME/datasets/trash/results/h4
+	$ rsync -avzh --stats --progress alijanif@mahtipuhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/*.png $HOME/datasets/trash/results/h4
+	
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x2*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x* $HOME/datasets/compressed_concatenated_SPMs/ -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_DATASET/nike* $HOME/datasets/Nationalbiblioteket/NLF_DATASET/ -vv
@@ -138,12 +159,14 @@ $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --g
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/EUROPEANA_1900-01-01_1970-12-31/*.xlsx $HOME/datasets/trash/results/eu -vv
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02/*.xlsx $HOME/datasets/trash/results/wwii -vv
 	
-	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4 -vv
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4 -vv
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/users/alijanif/WS_Farid/ImACCESS/misc/super_labels.json $HOME/WS_Farid/base_essentials
+
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4
+	
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/SMU_1900-01-01_1970-12-31/outputs $HOME/datasets/trash/results/smu -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/datasets/WW_DATASETs/SMU_1900-01-01_1970-12-31/outputs $HOME/datasets/trash/results/smu -vv
 	
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
 	
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_llm_keywords.xlsx $HOME/datasets/trash/results/h4 -vv
 
@@ -155,11 +178,8 @@ $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --g
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/H*/single_label/*.png $HOME/datasets/trash/results/h4/ -vv
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/H*/single_label/*.png $HOME/datasets/trash/results/h4/ -vv
 
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/h4_*.out $HOME/datasets/trash/logs/ -vv
-	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/h4_*.out $HOME/datasets/trash/logs/ -vv
 
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/.ssh/narvi_key" alijani@narvi.tut.fi:/lustre/sgn-data/ImACCESS/WW_DATASETs/H*/results/*.png $HOME/datasets/trash/results/ -vv
-
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/trash/S*.txt $HOME/datasets/trash/logs/ -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:/media/volume/ImACCESS/WW_DATASETs/S*/single_label/*.png $HOME/datasets/trash/results/smu -vv
@@ -232,7 +252,7 @@ $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --g
 	
 	# Create a new csv file:
 	$ head -n 570 metadata_multi_label.csv > test_medium.csv # first N rows
-	$ (head -n 1 metadata_multi_label.csv && tail -n 31 metadata_multi_label.csv) > test.csv # first row + last N rows
+	$ (head -n 1 metadata_multi_label.csv && tail -n 41 metadata_multi_label.csv) > test.csv # first row + last N rows
 	
 	# update all packages in a virtual env 
 	$ conda update --all
@@ -289,6 +309,7 @@ $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 $ watch squeue -u alijani # monitor every 2 sec
 $ squeue --me
 $ squeue --me -o "%.15i %.12P %.10t %.15D %.15R %.15Q %.25S"
+$ sprio -l -p gpu --sort=-y # check priority of jobs in the queue for gpu partition
 #run interactive cpu/gpu: to debug and run something...
 	$ source interactive_cpu.sh
 # OR... 
@@ -505,6 +526,15 @@ import torch
 torch.cuda.init()
 print(torch.randn(1, device='cuda'))
 
+
+### Regex:
+# Basic Usage
+$ grep "search_term" large_log_file.txt
+
+# Search for Multiple Terms
+$ grep "term1|term2|term3" large_log_file.txt
+
+
 ##################################################################################################
 # nohup:
 $ nohup python -u RecSys_usr_token.py --inputDF /scratch/project_2004072/Nationalbiblioteket/dataframes/nikeY.docworks.lib.helsinki.fi_access_log.07_02_2021.log.dump --qphrase 'åbo akademi' --lmMethod 'stanza' > nikeY_stanza.out &
@@ -515,7 +545,9 @@ $ jobs -l # get pid of the running jobs
 
 $ kill PID_NUMBER
 
-# Ubuntu:
+# kill all child processes of a parent process:
+
+$ kill -TERM -PID_NUMBER   # or kill -9 -PID_NUMBER for forceful termination
 
 # delete file delete list files from nikeQ_30_xxx.txt to nikeQ_59_xxx.txt
 $ ls -l /scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_chunk_{0..24}.csv
@@ -575,6 +607,3 @@ $ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_
 
 $ oc describe quota
 $ oc describe limitranges
-
-
-ground forces Thousands Of German Prisoners Corralled In A Town Square In Germany, Are Photographed By 1St Tac Af Combat Cameraman Sgt. Joseph M. Beach, Jr.  These Are But A Small Part Of The Us Army'S Bag Of Ex-Supermen Rounded Up As The American Ground And Air Forces (U.S. Air Force Number 57178AC) History: Negative received 21 April 1945 from BPR (Air Forces Group).  Stamped:  "Passed for Publication, Field Press Censor."
