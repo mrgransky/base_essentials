@@ -43,6 +43,7 @@ $ cat /etc/os-release
 
 # run interactive gpu [Puhti]:
 $ srun -J interactive_gpu_test --account=project_2014707 --partition=gputest --gres=gpu:v100:4 --time=0-00:15:00 --mem=64G --cpus-per-task=4 --pty /bin/bash -i
+
 # run interactive gpu [Mahti]:
 $ srun -J gpu_interactive_test --account=project_2009043 --partition=gputest --gres=gpu:a100:4 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
 
@@ -54,7 +55,7 @@ $ srun -J interactive_gpu --account=project_2014707 --partition=gpusmall --gres=
 $ srun -J interactive_cpu --account=project_2004072 --partition=interactive --time=00-13:00:00 --mem=73G --ntasks=1 --cpus-per-task=8 --pty /bin/bash -i
 
 # LUMI:
-$ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --gres=gpu:mi250:1 --time=0-02:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
+$ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --gres=gpu:mi250:1 --time=0-02:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
 
 2. mount working_folders from narvi computer to local: (type in local machine)
 	$ sshfs -o IdentityFile=/home/xenial/narvi_key/xenial-narvi-key alijani@narvi.tut.fi:example_folder /home/xenial/narvi_ws/
@@ -135,17 +136,17 @@ $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --g
 6. copy from server -> local:
 	# To local laptop (must be executed locally):
 	# Puhti:
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/*_h4.txt $HOME/datasets/trash/logs -vv
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/mm*.out $HOME/datasets/trash/logs -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/inference $HOME/datasets/trash/results/h4
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multimodal_canonical_labels/inference $HOME/datasets/trash/results/h4
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/*.png $HOME/datasets/trash/results/h4
 
 	# Mahti:
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/*_h4.txt $HOME/datasets/trash/logs -vv
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
-	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/inference $HOME/datasets/trash/results/h4
+	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multimodal_canonical_labels/inference $HOME/datasets/trash/results/h4
 	$ rsync -avzh --stats --progress alijanif@mahtipuhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/*.png $HOME/datasets/trash/results/h4
 	
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_SPMs/concat_x2*.tar.gz $HOME/datasets/compressed_concatenated_SPMs/ -vv
@@ -234,16 +235,24 @@ $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --g
 	$ conda info --envs
 	$ conda env list 
 
-	$ conda create -n py39 python=3.9
-	$ conda remove -n py39 --all -y
+	$ conda create -n py312 python=3.12 -y
+
+	# to remove the entire :
+	$ conda deactivate
+	$ conda remove -n py312 --all -y
+
 	$ conda remove -n myenv scipy
 	$ conda clean --all # remove all unused packages
-	$ conda activate py39
-	$ pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+	$ conda activate py312
 
-	$ pip install numpy pandas transformers hf-xet sentence-transformers dill scipy matplotlib seaborn joblib scikit-learn nltk tqdm pillow langdetect fasttext
+	# install on fresh venv:
+	$ pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+	$ pip install einops packaging ninja psutil
+	$ pip install transformers hf-xet sentence-transformers bitsandbytes accelerate openai
+	$ pip install flash-attn --no-build-isolation -v
+	$ pip install matplotlib seaborn nltk rake-nltk wordcloud langdetect fasttext lingua-language-detector
+	$ pip install scikit-image scikit-multilearn csvkit tabulate natsort requests dill nvitop graphviz ftfy
 
-	$ pip install csvkit
 	$ head /scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multimodal.csv | csvcut -c img_url,multimodal_labels
 	$ csvcut -c img_url,multimodal_labels /scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multimodal.csv | less
 
@@ -251,8 +260,9 @@ $ srun -J gpu_interactive_test --account=project_462001167 --partition=dev-g --g
 	$ cat FILE_NAME  | wc -l
 	
 	# Create a new csv file:
+	$ head -n 23 metadata_multi_label.csv > test.csv # first N rows
 	$ head -n 570 metadata_multi_label.csv > test_medium.csv # first N rows
-	$ (head -n 1 metadata_multi_label.csv && tail -n 41 metadata_multi_label.csv) > test.csv # first row + last N rows
+	$ (head -n 1 metadata_multi_label.csv && tail -n 21 metadata_multi_label.csv) > test.csv # first row + last N rows
 	
 	# update all packages in a virtual env 
 	$ conda update --all
@@ -332,7 +342,7 @@ $ sprio -l -p gpu --sort=-y # check priority of jobs in the queue for gpu partit
 $ sinfo -o "%15P %3c %10m %21l %60G %24e %5D %30f %30N"
 $ squeue -p gpu -o "%.12i %.8u %.2t %.9P %.5D %.10R %.10Q %.25S" --sort=-Q
 $ sprio -j <job_id>
-$ sudo apt update -y && sudo apt upgrade -y
+$ sudo apt update -y && sudo apt full-upgrade -y
 
 # This command will print the following information for each partition:
 # 	%15P: Partition name
@@ -607,3 +617,47 @@ $ oc rsync /scratch/project_2004072/Nationalbiblioteket/compressed_concatenated_
 
 $ oc describe quota
 $ oc describe limitranges
+
+# vim:
+# rename a variable in the entire file:
+$ vim file.jsonl # open the file
+:s/old_name/new_name/g # replace
+# Example:
+:%s/vlm_cot_raw/mlm_cot_raw/g
+:wq! # save and quit
+
+You are an expert archivist. Analyze the image and caption.
+Caption: Wavy blade knife with wooden handle. The knife is placed on a wooden table.
+
+TEXT_CONCEPTS: A Python list of keywords derived strictly from the caption.
+VISUAL_CONCEPTS: A Python list of keywords derived strictly from the primary focal artifact in the image. Ignore background scenery, tables, or unrelated tools unless they are physically part of the main artifact.
+FUSED_CONCEPTS: A Python list of new inferred concepts that require combining text and image. Do NOT just combine text words. (e.g., if text says 'knife' and image shows a 'leather tube', infer 'sheath'). If no true fusion is possible, output an empty list []."
+
+
+
+You are an expert historical archivist specializing in multi-label annotation for 20th-century conflict photography.
+
+Your task is to analyze the provided historical B&W image alongside its historical caption and extract distinct concepts. You must categorize these concepts strictly into three lists of short keywords or short phrases (max 3 words per item).
+
+CORE DOMAIN RULES:
+1. MULTI-LABEL EXTRACTION: Extract ALL historically relevant entities. Do not focus on just one object.
+2. ANTI-SCOPE-CREEP & OCR BAN: NEVER include generic environmental descriptions, textures, structural minutiae, or literal text reads of signs (e.g., strictly exclude: "clouds", "dirt", "DANGER", "wooden beams", "log", "curb"). ONLY include historically defining structures (e.g., "trench", "bunker").
+3. PROPER NOUN BAN & ROLE INFERENCE: NEVER output individual people's names (e.g., exclude "Melvin Shaffer"). NEVER output standalone years (e.g., exclude "1944"). However, if the text mentions specific units or groups, you MUST infer and include their generalized role (e.g., if text says "MAMAS unit", include "medical personnel").
+
+OUTPUT DEFINITIONS:
+- text_concepts: Keywords derived STRICTLY from the caption. Apply PROPER NOUN BAN, DATE BAN, and ROLE INFERENCE.
+- visual_concepts: Keywords derived STRICTLY from the pixel data. Apply ANTI-SCOPE-CREEP & OCR BAN. Extract visible historical actors, vehicles, and structures.
+- fused_concepts: 1 to 2 NEW, high-level synthesized short phrases requiring BOTH modalities.
+    - GRANULARITY RESOLUTION: If text is broad ("weapon") and image is specific ("rifle"), resolve to the specific term.
+    - BAD: A full sentence ("3rd detachment soldiers on log") or overly generic hypernyms ("wartime mobilization", "military activity").
+    - GOOD: Specific semantic phrases ("medical personnel resting", "military encampment", "damaged vehicles").
+    - CRITICAL RULE (CONFLICT DETECTION): If the text and image describe completely disjoint locations, vehicles, or actions (e.g., text says "aircraft" but image shows "ships"), you MUST output an empty list []. Do not attempt to force a fusion.
+
+Caption: {caption}
+
+Respond ONLY with a valid JSON object in the exact format below. Do not output any markdown formatting, backticks, or conversational text.
+{
+"text_concepts": [],
+"visual_concepts": [],
+"fused_concepts":[]
+}

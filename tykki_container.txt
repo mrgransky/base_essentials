@@ -50,8 +50,17 @@ channels:
 	- conda-forge
 dependencies:
 	- python=3.12
+	- pip
+	- setuptools
+	- wheel
 
-Create requirements.txt (in the same location) for pip packages.
+	# Core runtime libs
+	- libstdcxx-ng>=14
+	- libgcc-ng>=14
+	- sqlite
+	- icu
+	- openssl
+	- zlib
 
 $ conda-containerize new --prefix CondaCSC environment.yml
 
@@ -79,9 +88,7 @@ $ python -VV
 
 continue with package installation:
 $ module purge
-
 $ module load tykky
-
 $ cd /projappl/project_2004072
 
 $ vim packages.sh
@@ -177,6 +184,7 @@ pip install \
 	transformers \
 	bitsandbytes \
 	accelerate \
+	openai \
 	sentence-transformers \
 	keybert
 
@@ -189,9 +197,7 @@ pip install \
 
 echo "Installing other packages..."
 pip install \
-	scipy \
 	blis \
-	scikit-learn \
 	scikit-image \
 	scikit-multilearn \
 	kneed \
@@ -214,7 +220,6 @@ pip install \
 	rapidfuzz \
 	plotly \
 	pyarrow \
-	joblib \
 	pydantic \
 	pycocotools \
 	dill \
@@ -247,3 +252,11 @@ pipdeptree --reverse --packages flash-attn
 
 $ cat packages.sh
 $ conda-containerize update CondaCSC --post-install packages.sh
+
+in case of any problem in loading LD_LIBRARY_PATH:
+# In ~/.bashrc
+# Fix for ICU/sqlite in Singularity containers
+GENERIC_GCC_PATH=$(ls -d /appl/spack/v023/install-tree/gcc-8.5.0/gcc-14.2.0-*/lib64 2>/dev/null | head -n 1)
+if [ -n "$GENERIC_GCC_PATH" ]; then
+		export SINGULARITYENV_LD_LIBRARY_PATH="$GENERIC_GCC_PATH"
+fi

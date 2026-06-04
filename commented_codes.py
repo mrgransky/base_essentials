@@ -1,3 +1,1656 @@
+##################################################################
+# - When a term is a specific subtype of a broader, reusable category, prefer the broader canonical category unless the subtype is necessary for disambiguation.
+#	* Explanatory text, punctuation, or output formatting beyond the Python list.
+#	x abstract organizational/social events with no visual anchor (e.g., "meeting", "trip", "outing").
+#	❌ Generic photography or image-related terminology.
+# ❌ Complex phrases that combine different entities (e.g., "soldier in a forest").
+# - Keyword priority order:
+# 	1) Physical objects (tangible, visually prominent)
+# 	2) Actions (if more reusable than objects present)
+# 	3) Human roles (only if visually salient)
+# 	4) Scene elements
+#	- "flag" instead of "german flag"
+#	- "red cross" instead of "american red cross"
+# - "smoking" instead of "a group of youngsters smoking outdoors"
+
+# - Bias toward label reuse:
+# 	If a specific phrase can be reduced to a more general equivalent **without losing factual correctness**, opt for general form.
+# 	If a term represents a standardized domain-specific concept 
+# 	(e.g., military designation, chemical classification, organization name),
+# 	it MUST be treated as a single atomic label and MUST NOT be reduced.
+# - Keywords MAY appear verbatim in the caption if they are the most precise and reusable label. Do NOT paraphrase just to avoid repetition.
+
+
+# # Too Specific which produces massive number of singleton labels
+# # self-contained and grammatically complete phrases
+# LLM_INSTRUCTION_TEMPLATE = """<s>[INST]
+# You function as a historical archivist whose expertise lies in the 20th century.
+# Given the caption below, extract no more than {k} highly prominent, factual, and distinct **KEYWORDS** that convey the primary actions, objects, or occurrences. 
+# - The standardized and parsable **Python LIST** must be the **VERY LAST THING** in your response without any explanatory text.
+
+# {caption}
+
+# **CRITICAL RULES**:
+# - Return **ONLY** a standarized, valid, and parsable **Python LIST** with **AT MOST {k} KEYWORDS** - fewer is **highly expected** if the caption is either short or lacks distinct concepts.
+# - Extracted **KEYWORDS** must be self-contained and grammatically complete phrases that actually appear in the caption:
+# 	* ALL GENERIC ABBREVIATIONS MUST BE FULLY EXPANDED TO THEIR STANDARD FULL FORMS UNLESS they are part of a proper name or named entity, in which case they must be preserved exactly as written in the caption.
+# 	* DUPLICATES AND VARIANTS MUST BE RESOLVED FOR CONSISTENCY.
+# - **STRICTLY EXCLUDE** phrases that include phrasal verbs, or possessive cases as standalone keywords.
+# - **STRICTLY EXCLUDE** keywords that start or end with prepositions or conjunctions.
+# - **STRICTLY EXCLUDE** keywords which contain number signs (59, #59, No.59, No. 59, No 59), or special characters EXCEPT periods used within initials that are part of proper names (e.g., "S.S. Berkeley", "Albert E. Jenner, Jr.").
+# - **STRICTLY EXCLUDE** dates, times, hours, minutes, calendar references, seasons, months, days, years, decades, centuries, or **ANY** time-related content.
+# - **STRICTLY EXCLUDE** geographic references, continents, countries, towns, cities, or states.
+# - **STRICTLY EXCLUDE** serial/reference numbers, geographic/infrastructure/operational identifiers, measurements, units, coordinates, or **ANY** quantitative keywords.
+# - **STRICTLY EXCLUDE** generic photography, image, picture, media keywords or **ANY** technical photo specifications.
+# - **STRICTLY EXCLUDE** explanatory texts, code blocks, punctuations, or tags before or after the **Python LIST**.
+# - The standarized and parsable **Python LIST** must be the **VERY LAST THING** in your response.
+# [/INST]"""
+##################################################################
+
+def cluster_original(
+	labels: List[List[str]],
+	model_id: str,
+	clusters_fname: str,
+	batch_size: int = 1024,
+	device: str = "cuda:0" if torch.cuda.is_available() else "cpu",
+	nc: int = None,
+	linkage_method: str = "ward",  # 'average', 'complete', 'single', 'ward'
+	distance_metric: str = "euclidean",  # 'cosine', 'euclidean'
+	verbose: bool = True,
+):
+	st_t = time.time()
+	if verbose:
+		print(f"\n[AGGLOMERATIVE CLUSTERING] {len(labels)} samples")
+		print(f"   ├─ {model_id} | {device} | batch_size: {batch_size}")
+		print(f"   ├─ linkage: {linkage_method}")
+		print(f"   ├─ sample: {labels[:5]}")
+
+		requires_type_exchange = isinstance(labels[0], str)
+
+		print(f"   ├─────> {type(labels[0])} requires_type_exchange: {requires_type_exchange}")
+		print(f"   └─ nc: {nc} {f'Manually defined' if nc else '=> Adaptive Search'}")
+	
+	print(f"\n[DEDUP] {len(labels)} {type(labels)} raw labels")
+	documents = list()
+	for i, doc in enumerate(labels):
+		if doc is None:
+			# print(f"doc[{i}]: None (skipping)")
+			continue
+		
+		if isinstance(doc, str):
+			try:
+				doc = ast.literal_eval(doc)
+			except (ValueError, SyntaxError):
+				print(f"doc[{i}]: Failed to parse '{doc}' (skipping)")
+				continue
+		
+		if not isinstance(doc, list):
+			print(f"doc[{i}]: Invalid type {type(doc)} (skipping)")
+			continue
+		
+		# Deduplicate labels within document
+		documents.append(list(set(lbl for lbl in doc if lbl is not None)))
+	
+	# Flatten and deduplicate (deterministic and reproducible)
+	unique_labels = sorted(set(label for doc in documents for label in doc))
+	
+	print(f"Total {type(documents)} documents: {len(documents)}")
+	print(f"Unique {type(unique_labels)} labels: {len(unique_labels)}")
+	print(f"Sample unique labels: {unique_labels[:15]}")
+	print("-"*100)
+	
+	dtype = torch.float32  # More stable than float16
+	if torch.cuda.is_available():
+		if torch.cuda.is_bf16_supported():
+			dtype = torch.bfloat16  # bfloat16 is more stable than float16
+		else:
+			dtype = torch.float32
+	if verbose:
+		print(f"[INFO] {model_id} Dtype selection: {dtype}")
+
+	def _optimal_attn_impl() -> str:
+		if not torch.cuda.is_available():
+			return "eager"
+		
+		major, minor = torch.cuda.get_device_capability()
+		compute_cap = major + minor / 10
+		
+		# Flash Attention 2 requires Ampere or newer (compute >= 8.0)
+		if compute_cap >= 8.0:
+			try:
+				import flash_attn
+				if verbose:
+					print(f"[INFO] Flash Attention 2 available (compute {compute_cap})")
+				return "flash_attention_2"
+			except ImportError:
+				if verbose:
+					print(f"[WARN] Flash Attention 2 not installed (pip install flash-attn)")
+		
+		# For older GPUs (Volta/Turing), use SDPA (PyTorch native, faster than eager)
+		if compute_cap >= 7.0:
+			if torch.__version__ >= "2.0.0":
+				if verbose:
+					print(f"[INFO] Using SDPA attention (compute {compute_cap}, PyTorch {torch.__version__})")
+				return "sdpa"		
+
+		if verbose:
+			print(f"[INFO] Using eager attention (compute {compute_cap})")
+		return "eager"
+
+	attn_impl = _optimal_attn_impl()
+	if verbose:
+		print(f"[INFO] {model_id} with {attn_impl} attention")
+
+	print(f"\n[INIT] Loading Sentence Transformer {model_id}")
+	model = SentenceTransformer(
+		model_name_or_path=model_id,
+		trust_remote_code=True,
+		cache_folder=cache_directory[os.getenv('USER')],
+		model_kwargs={"attn_implementation": attn_impl, "dtype": dtype} if "Qwen" in model_id else {}, # "Qwen" in model_id else {}",
+		token=os.getenv("HUGGINGFACE_TOKEN"),
+		tokenizer_kwargs={"padding_side": "left"},
+	).to(device)
+	
+	print(f"[LOADED] {sum(p.numel() for p in model.parameters()):,} parameters")
+	
+	print(f"\n[ENCODING] {len(unique_labels)} labels | batch_size: {batch_size} | {device}")
+	X = model.encode(
+		unique_labels,
+		batch_size=batch_size,
+		show_progress_bar=verbose,
+		convert_to_numpy=True,
+		normalize_embeddings=True,
+		precision='float32', # float32 is more stable than float16 for CPU stability
+	)
+
+	if np.isnan(X).any():
+		nan_count = np.isnan(X).sum()
+		nan_rows = np.where(np.isnan(X).any(axis=1))[0]
+		
+		print("\n" + "="*80)
+		print(f"❌ ERROR: {nan_count} NaN values in embeddings!")
+		print("="*80)
+		print(f"Affected labels ({len(nan_rows)} total):")
+		for idx in nan_rows[:10]:  # Show first 10
+				print(f"  - {unique_labels[idx]}")
+		if len(nan_rows) > 10:
+				print(f"  ... and {len(nan_rows) - 10} more")
+		
+		print("\nROOT CAUSE:")
+		print("  1. Model dtype is float16 on CPU (use float32)")
+		print("  2. Model is too large for available memory")
+		print("  3. Numerical instability in model")
+		
+		print("\nFIX:")
+		print("  - Use torch_dtype=torch.float32 when loading model")
+		print("  - Use precision='float32' in model.encode()")
+		print("  - Or switch to GPU / smaller model")
+		
+		raise ValueError("Cannot proceed with NaN embeddings")
+
+	if np.isinf(X).any():
+		inf_count = np.isinf(X).sum()
+		raise ValueError(f"Infinite values detected ({inf_count}) - numerical overflow!")
+
+	if X.shape[0] == 0:
+		raise ValueError("No embeddings generated")
+
+	if np.allclose(X, 0):
+		raise ValueError("All embeddings are zero vectors")
+
+	print(f"\nEmbeddings {type(X)} {X.shape} {X.dtype}")
+	print(f"  ├─ Range: [{X.min():.4f}, {X.max():.4f}]")
+	print(f"  ├─ Mean: {X.mean()} | Std: {X.std()}")
+	print(f"  └─ ")
+
+	t0 = time.time()
+	# OPTION 1: Ward linkage (RECOMMENDED for preventing mega-clusters)
+	if linkage_method == "ward":
+		# Ward requires Euclidean distance
+		# For normalized embeddings, Euclidean ≈ Cosine
+		if use_fastcluster:
+			Z = fastcluster.linkage(X, method='ward', metric='euclidean')
+		else:
+			Z = linkage(X, method='ward', metric='euclidean')
+	elif distance_metric == "cosine":
+		# Efficient cosine distance computation
+		distance_matrix = 1 - (X @ X.T)
+		np.fill_diagonal(distance_matrix, 0)
+		distance_matrix = np.clip(distance_matrix, 0, 2)
+		condensed_dist = squareform(distance_matrix, checks=False)
+		if use_fastcluster:
+			Z = fastcluster.linkage(condensed_dist, method=linkage_method)
+		else:
+			Z = linkage(condensed_dist, method=linkage_method)
+		print(f"[LINKAGE] Using {linkage_method} linkage with {distance_metric} distance")
+	elif distance_metric == "euclidean":
+		if use_fastcluster:
+			Z = fastcluster.linkage(X, method=linkage_method, metric='euclidean')
+		else:
+			Z = linkage(X, method=linkage_method, metric='euclidean')
+		print(f"[LINKAGE] Using {linkage_method} linkage with Euclidean distance")
+	else:
+		raise ValueError(f"Unsupported distance metric: {distance_metric}")
+
+	print(f": {type(Z)} {Z.shape} {Z.dtype} {Z.strides} {Z.itemsize} {Z.nbytes} | {time.time()-t0:.1f} sec")
+	
+	# Determine Optimal Number of Clusters
+	if nc is None:
+		# new dataset:
+		cluster_labels, stats = get_optimal_num_clusters(
+			X=X,
+			linkage_matrix=Z,
+			target_intra_similarity=0.69,
+			min_consolidation=3.8,
+			max_consolidation=5.0,
+			target_singleton_ratio=0.015,
+			quality_vs_consolidation_weight=0.5,
+			merge_singletons=True,
+			verbose=verbose,
+		)
+
+		# # old dataset:
+		# cluster_labels, stats = get_optimal_num_clusters(
+		# 	X=X,
+		# 	linkage_matrix=Z,
+		# 	target_intra_similarity=0.7,
+		# 	min_consolidation=4.0,
+		# 	max_consolidation=6.0,
+		# 	target_singleton_ratio=0.015,
+		# 	quality_vs_consolidation_weight=0.6,
+		# 	merge_singletons=True,
+		# 	verbose=verbose,
+		# )
+
+		best_k = stats['n_clusters']
+	else:
+		best_k = nc
+		print(f"\nUsing user-defined k={best_k} for {len(unique_labels)} labels")
+	
+		print(f"\nCutting dendrogram at k={best_k} for {len(unique_labels)} labels")
+		cluster_labels = fcluster(Z, best_k, criterion='maxclust') - 1 # Convert to 0-indexed
+
+	print(f"\n[CLUSTERING] {len(np.unique(cluster_labels))} clusters") 
+	print(f"{cluster_labels.shape} {type(cluster_labels)} labels.")
+	print(f"(min, max): ({cluster_labels.min()}, {cluster_labels.max()})")
+
+	# get_optimal_super_clusters(
+	# 	linkage_matrix=Z, 
+	# 	embeddings=X,
+	# 	cluster_labels=cluster_labels,
+	# 	unique_labels=unique_labels,
+	# 	linkage_method=linkage_method,
+	# 	clusters_fname=clusters_fname,
+	# 	n_thresholds=50,
+	# 	min_clusters=3,
+	# 	max_clusters=10,
+	# 	verbose=verbose
+	# )
+	
+	df = pd.DataFrame(
+		{
+			'label': unique_labels,
+			'cluster': cluster_labels
+		}
+	)
+	
+	# cluster_canonicals = {}
+	# for cid in sorted(df.cluster.unique()):
+	# 	cluster_mask = df.cluster == cid
+	# 	cluster_texts = df[cluster_mask]['label'].tolist()
+	# 	cluster_indices = df[cluster_mask].index.tolist()
+	# 	cluster_embeddings = X[cluster_indices]
+		
+	# 	# Centroid-nearest
+	# 	centroid = cluster_embeddings.mean(axis=0, keepdims=True)
+	# 	similarities = cosine_similarity(centroid, cluster_embeddings)[0]
+	# 	best_idx = similarities.argmax()
+	# 	canonical = cluster_texts[best_idx]
+		
+	# 	cluster_canonicals[cid] = {
+	# 		'canonical': canonical,
+	# 		'score': float(similarities[best_idx]),
+	# 		'size': len(cluster_texts)
+	# 	}
+
+	# 	if verbose:
+	# 		print(f"\n[Cluster {cid}] {len(cluster_texts)} labels:\n{cluster_texts}")
+	# 		print(f"\tCanonical: {canonical} (sim={similarities[best_idx]:.4f})")
+
+	# Build label frequency dict from documents
+	print(f"\n[CLUSTERING] {len(np.unique(cluster_labels))} clusters for {cluster_labels.shape} {type(cluster_labels)} labels. {cluster_labels.min()} {cluster_labels.max()}")
+	label_freq_dict = {}
+	for doc in documents:
+		for label in doc:
+			label_freq_dict[label] = label_freq_dict.get(label, 0) + 1
+	# print(label_freq_dict)
+
+	original_label_counts = label_freq_dict
+	print(f"\tComputed frequencies for {len(original_label_counts)} labels")
+	print(f"\tTotal label instances: {sum(original_label_counts.values())}")
+	print(f"\tMost frequent: {max(original_label_counts.items(), key=lambda x: x[1])}")
+	print('-'*150)
+
+	print(f"\nCanonical labels per cluster")
+	cluster_canonicals = {}
+	freq_changed_count = 0
+	total_sim_loss = list()
+	total_freq_gain = list()
+	questionable_examples = list()
+
+	t0 = time.time()
+	for cid in sorted(df.cluster.unique()):
+		cluster_mask = df.cluster == cid
+		cluster_texts = df[cluster_mask]['label'].tolist()
+		cluster_indices = df[cluster_mask].index.tolist()
+		cluster_embeddings = X[cluster_indices]
+
+		if verbose:
+			print(f"\n[Cluster {cid}] {len(cluster_texts)} labels:\n{cluster_texts}")
+		
+		# Compute centroid
+		centroid = cluster_embeddings.mean(axis=0, keepdims=True)
+		similarities = cosine_similarity(centroid, cluster_embeddings)[0]
+		
+		# Frequency-Weighted Canonical Selection
+		if original_label_counts is not None and len(original_label_counts) > 0 and len(cluster_texts) > 1:
+			# Get label frequencies
+			label_freqs = np.array([original_label_counts.get(lbl, 1) for lbl in cluster_texts])
+			
+			# Normalize frequencies to [0, 1] using log-scale
+			freq_scores = np.log1p(label_freqs) / np.log1p(label_freqs.max())
+			
+			# Hybrid scoring: 70% similarity, 30% frequency
+			combined_scores = 0.7 * similarities + 0.3 * freq_scores
+			best_idx = combined_scores.argmax()
+			pure_sim_idx = similarities.argmax()
+			
+			# Safety check - require minimum 3x gain
+			if best_idx != pure_sim_idx:
+				freq_gain = label_freqs[best_idx] / max(label_freqs[pure_sim_idx], 1)
+				
+				# Only override similarity if frequency gain is meaningful (≥3x)
+				if freq_gain < 3.0:
+					best_idx = pure_sim_idx  # Revert to pure similarity choice
+			
+			# Track changes (after the safety check)
+			if best_idx != pure_sim_idx:
+				freq_changed_count += 1
+				
+				# Calculate impact metrics
+				sim_loss = (similarities[pure_sim_idx] - similarities[best_idx]) / similarities[pure_sim_idx]
+				freq_gain = label_freqs[best_idx] / max(label_freqs[pure_sim_idx], 1)
+				
+				total_sim_loss.append(sim_loss)
+				total_freq_gain.append(freq_gain)
+				
+				# Track questionable trades for inspection
+				if sim_loss > 0.10 or freq_gain < 3.0:
+						questionable_examples.append({
+							'cluster_id': cid,
+							'pure_choice': cluster_texts[pure_sim_idx],
+							'freq_choice': cluster_texts[best_idx],
+							'pure_freq': label_freqs[pure_sim_idx],
+							'freq_freq': label_freqs[best_idx],
+							'pure_sim': similarities[pure_sim_idx],
+							'freq_sim': similarities[best_idx],
+							'sim_loss': sim_loss,
+							'freq_gain': freq_gain,
+							'cluster_size': len(cluster_texts),
+							'cluster_labels': cluster_texts
+						})
+				
+				if verbose:
+					print(f"Frequency weighting changed selection:")
+					print(f"  Pure similarity would pick: {cluster_texts[pure_sim_idx]} (sim={similarities[pure_sim_idx]:.4f}, freq={label_freqs[pure_sim_idx]})")
+					print(f"  Frequency-weighted picks: {cluster_texts[best_idx]} (sim={similarities[best_idx]:.4f}, freq={label_freqs[best_idx]})")
+		else:
+			# Fallback: pure similarity (original method)
+			best_idx = similarities.argmax()
+		
+		canonical = cluster_texts[best_idx]
+
+		if verbose:
+			print(f"\t=> Selected Canonical: {canonical} (sim={similarities[best_idx]:.4f})")
+		
+		cluster_canonicals[cid] = {
+			'canonical': canonical,
+			'score': float(similarities[best_idx]),
+			'size': len(cluster_texts)
+		}
+		
+	
+	print(f"\n[CLUSTERING] {len(cluster_canonicals)} cluster canonicals computed in {time.time()-t0:.1f} sec.")
+	print(f"-"*100)
+
+	print("\nFREQUENCY WEIGHTING IMPACT ANALYSIS")
+	total_clusters = len(df.cluster.unique())
+	print(f"  Total clusters analyzed: {total_clusters}")
+	print(f"  Clusters where frequency changed the canonical: {freq_changed_count} ({freq_changed_count/total_clusters*100:.1f}%)")
+
+	if total_sim_loss:
+		print(f"\nSIMILARITY LOSS IMPACT:")
+		print(f"  Average  {np.mean(total_sim_loss)*100:.2f}%")
+		print(f"  Median   {np.median(total_sim_loss)*100:.2f}%")
+		print(f"  Max      {np.max(total_sim_loss)*100:.2f}%")
+		print(f"  Min      {np.min(total_sim_loss)*100:.2f}%")
+		
+		print(f"\nFREQUENCY GAIN BENEFIT:")
+		print(f"  Average {np.mean(total_freq_gain):.1f}x")
+		print(f"  Median  {np.median(total_freq_gain):.1f}x")
+		print(f"  Max     {np.max(total_freq_gain):.1f}x")
+		print(f"  Min     {np.min(total_freq_gain):.1f}x")
+		
+		print(f"\nQUALITY ASSESSMENT:")
+		excellent_trades = sum(1 for s, f in zip(total_sim_loss, total_freq_gain) if s < 0.03 and f > 10)
+		good_trades = sum(1 for s, f in zip(total_sim_loss, total_freq_gain) if s < 0.05 and f > 5)
+		questionable_trades = sum(1 for s, f in zip(total_sim_loss, total_freq_gain) if s > 0.10 or f < 2)
+		
+		print(f"  Excellent trades (<3% sim loss, >10x freq gain): {excellent_trades:<10} ({excellent_trades/freq_changed_count*100:.1f}%)")
+		print(f"  Good trades (<5% sim loss, >5x freq gain):       {good_trades:<10} ({good_trades/freq_changed_count*100:.1f}%)")
+		print(f"  Questionable trades (>10% sim loss or <2x gain): {questionable_trades:<10} ({questionable_trades/freq_changed_count*100:.1f}%)")
+		
+		if questionable_trades > 0 and verbose:
+			print(f"\n[WARNING] {questionable_trades} questionable trades detected:")
+			print(f"\t=> Consider adjusting weighting (currently 70/30) if this is high\n")
+			print(f"{'Cluster':<10} {'Pure Sim Choice':<35} {'Freq Weight Choice':<35} {'Sim Loss(%)':<15} {'Freq Gain'}")
+			print("-" * 110)
+
+			for ex in sorted(questionable_examples, key=lambda x: x['sim_loss'], reverse=True):
+				pure_label = ex['pure_choice'][:32]
+				freq_label = ex['freq_choice'][:32]
+				print(f"{ex['cluster_id']:<10} {pure_label:<35} {freq_label:<35} {ex['sim_loss']*100:<15.1f} {ex['freq_gain']:.1f}x")
+
+			# Categorize questionable trades
+			high_loss_low_gain = [ex for ex in questionable_examples if ex['sim_loss'] > 0.10 and ex['freq_gain'] < 2]
+			high_loss_good_gain = [ex for ex in questionable_examples if ex['sim_loss'] > 0.10 and ex['freq_gain'] >= 2]
+			low_loss_low_gain = [ex for ex in questionable_examples if ex['sim_loss'] <= 0.10 and ex['freq_gain'] < 2]
+			
+			print(f"\nBREAKDOWN OF QUESTIONABLE TRADES:")
+			print(f"Type A: High loss (>10%) + Low gain (<2x):   {len(high_loss_low_gain):<10}{len(high_loss_low_gain)/questionable_trades:<10.4f}BAD")
+			print(f"Type B: High loss (>10%) + Good gain (≥2x):  {len(high_loss_good_gain):<10}{len(high_loss_good_gain)/questionable_trades:<10.4f}DEBATABLE")
+			print(f"Type C: Low loss  (≤10%) + Low gain (<2x):   {len(low_loss_low_gain):<10}{len(low_loss_low_gain)/questionable_trades:<10.4f}UNNECESSARY")
+		else:
+			print(f"\nAll trades are high-quality!")
+		
+		# Overall verdict
+		avg_sim_loss_pct = np.mean(total_sim_loss) * 100
+		avg_freq_gain = np.mean(total_freq_gain)
+		
+		print(f"\nOVERALL VERDICT:")
+		if avg_sim_loss_pct < 3 and avg_freq_gain > 50:
+				print(f"  ✅ EXCELLENT: Small quality cost ({avg_sim_loss_pct:.1f}%) for huge frequency benefit ({avg_freq_gain:.0f}x)")
+		elif avg_sim_loss_pct < 5 and avg_freq_gain > 10:
+				print(f"  ✅ GOOD: Acceptable quality cost ({avg_sim_loss_pct:.1f}%) for strong frequency benefit ({avg_freq_gain:.0f}x)")
+		elif avg_sim_loss_pct < 8 and avg_freq_gain > 5:
+				print(f"  ⚠️  ACCEPTABLE: Moderate quality cost ({avg_sim_loss_pct:.1f}%) for moderate frequency benefit ({avg_freq_gain:.0f}x)")
+		else:
+				print(f"  ❌ POOR: High quality cost ({avg_sim_loss_pct:.1f}%) for limited frequency benefit ({avg_freq_gain:.0f}x)")
+				print(f"     Consider reducing frequency weight from 0.3 to 0.2")
+	else:
+		print("\n  ℹ️  Frequency weighting made no changes (all clusters picked highest similarity)")
+
+	print("="*100)
+
+	df['canonical'] = df['cluster'].map(lambda c: cluster_canonicals[c]['canonical'])
+
+	# ── Sanity check: Verify canonical belongs to its cluster ──────────────
+	if verbose:
+		print("\n[SANITY CHECK] Verifying canonical labels belong to their clusters...")
+	
+	mismatches = 0
+	for cid, info in cluster_canonicals.items():
+		cluster_labels_for_cid = df[df['cluster'] == cid]['label'].tolist()
+		if info['canonical'] not in cluster_labels_for_cid:
+			mismatches += 1
+			# Fallback to the first label in the cluster
+			fallback = cluster_labels_for_cid[0]
+			if verbose:
+				print(f"  ⚠️  Cluster {cid}: canonical '{info['canonical']}' not in cluster {cluster_labels_for_cid[:5]}... — using fallback '{fallback}'")
+			cluster_canonicals[cid]['canonical'] = fallback
+			# Update dataframe
+			df.loc[df['cluster'] == cid, 'canonical'] = fallback
+	
+	if verbose:
+		if mismatches > 0:
+			print(f"  Fixed {mismatches} canonical mismatches")
+		else:
+			print(f"  ✅ All canonicals verified")
+
+	df, X_clean, removed_labels = remove_problematic_cluster_labels(
+		df=df,
+		embeddings=X,
+		low_cohesion_threshold=0.50,
+		poor_canonical_threshold=0.60,
+		verbose=True
+	)
+
+	out_csv = clusters_fname.replace(".csv", "_semantic_consolidation_agglomerative.csv")
+	df.to_csv(out_csv, index=False)
+	
+	unique_labels_array = df['label'].values  # 36,657 labels
+	cluster_labels = df['cluster'].values      # 36,657 cluster assignments
+	canonical_map = df.groupby('cluster')['canonical'].first().to_dict()
+
+	print("\nCOMPREHENSIVE CLUSTER QUALITY")
+	print(f"  ├─ Updated cluster_labels: {len(np.unique(cluster_labels))} unique clusters")
+	print(f"  ├─ Updated canonical_map: {len(canonical_map)} mappings")
+	print(f"  ├─ unique_labels_array: {type(unique_labels_array)} {unique_labels_array.shape}")
+	print(f"  ├─ cluster_labels: {type(cluster_labels)} {cluster_labels.shape}")
+	print(f"  ├─ label_freq_dict: {len(label_freq_dict)} labels with frequencies")
+	print(f"  ├─ df reports: {df['cluster'].nunique()} clusters")
+	print(f"  └─ cluster_labels reports: {len(np.unique(cluster_labels))} clusters")
+	
+	if df['cluster'].nunique() != len(np.unique(cluster_labels)):
+		print(f"[WARNING] Mismatch detected! Analysis may be stale!")
+	else:
+		print(f"All consistent!")
+
+	results = analyze_cluster_quality(
+		embeddings=X_clean,									# 36,657 embeddings (matches!)
+		labels=unique_labels_array,					# 36,657 labels
+		cluster_assignments=cluster_labels,	# 36,657 assignments
+		canonical_labels=canonical_map,
+		original_label_counts=label_freq_dict,
+		output_dir=os.path.dirname(clusters_fname),
+		verbose=verbose,
+	)
+
+	cluster_quality_csv = clusters_fname.replace(".csv", "_cluster_quality_metrics.csv")
+	results['per_cluster_metrics'].to_csv(cluster_quality_csv, index=False)
+
+	if results['problematic_clusters']:
+		if verbose:
+			print(f"\n[WARNING] {len(results['problematic_clusters'])} types of problematic clusters detected! => Exporting for manual review")
+		all_problematic_ids = list()
+		for issue in results['problematic_clusters']:
+			if issue['severity'] in ['HIGH', 'MEDIUM']:
+				all_problematic_ids.extend(issue['cluster_ids'])
+	
+		if all_problematic_ids:
+			problematic_csv = clusters_fname.replace(".csv", "_problematic_clusters_review.csv")
+			export_problematic_clusters(
+				labels=unique_labels_array,
+				cluster_assignments=cluster_labels,
+				canonical_labels=canonical_map,
+				problematic_cluster_ids=list(set(all_problematic_ids)),
+				output_path=problematic_csv
+			)
+
+	if verbose:
+		print(f"Clustered {len(df)} labels into {df['cluster'].nunique()} clusters")
+		print(f"{type(df)} {df.shape} {list(df.columns)}")
+		print(df.head(15))
+		print(df.info())
+		print(f"[CLUSTERING] Total Elapsed Time: {time.time()-st_t:.1f} sec")
+		print("="*60)
+
+	return df
+
+
+def _load_vlm_old(
+	model_id: str,
+	use_quantization: bool = False,
+	quantization_bits: int = 8,
+	force_multi_gpu: bool = False,
+	verbose: bool = False,
+) -> Tuple[tfs.PreTrainedTokenizerBase, torch.nn.Module]:
+	"""
+	Load a Vision-Language Model (VLM) with optimal settings.
+	
+	Implements intelligent device strategy:
+	1. For small models (<20GB): Single GPU for speed
+	2. For large models (>=20GB): Multi-GPU distribution
+	3. Adaptive VRAM buffering based on GPU size
+	4. Quantization-aware memory allocation
+	5. Avoids disk offloading at all costs
+	
+	Args:
+		model_id: HuggingFace model identifier
+		use_quantization: Whether to use quantization
+		quantization_bits: Quantization bits (4 or 8)
+		force_multi_gpu: Force multi-GPU distribution (for large models)
+		verbose: Enable verbose logging
+	
+	Returns:
+		Tuple of (processor, model)
+	"""
+	if verbose:
+		print(f"\n{'='*110}")
+		print(f"[MODEL] Loading {model_id} on cache_dir: {cache_directory.get(USER)}")
+
+	# ========== Version and CUDA info ==========
+	n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+	if verbose:
+		print(f"[VERSIONS] torch : {torch.__version__} transformers: {tfs.__version__}")
+		print(f"[INFO] CUDA available?        : {torch.cuda.is_available()} {n_gpus} GPU(s) available: {[torch.cuda.get_device_name(i) for i in range(n_gpus)]}")
+		if torch.cuda.is_available():
+			cur = torch.cuda.current_device()
+			major, minor = torch.cuda.get_device_capability(cur)
+			print(f"[INFO] Compute capability     : {major}.{minor}")
+			print(f"[INFO] BF16 support?          : {torch.cuda.is_bf16_supported()}")
+			print(f"[INFO] CUDA memory allocated  : {torch.cuda.memory_allocated(cur)//(1024**2)} MiB")
+			print(f"[INFO] CUDA memory reserved   : {torch.cuda.memory_reserved(cur)//(1024**2)} MiB")
+		else:
+			print("[INFO] Running on CPU only")
+	
+	# ========== HuggingFace login ==========
+	try:
+		if verbose:
+			print(f"[INFO] Logging in to HuggingFace Hub...")
+		huggingface_hub.login(token=hf_tk)
+	except Exception as e:
+		print(f"<!> Failed to login to HuggingFace Hub: {e}")
+		raise e
+	
+	# ========== Load config ==========
+	config = tfs.AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+	if verbose:
+		print(f"[INFO] {model_id} Config summary")
+		print(f"   • model_type        : {config.model_type}")
+		print(f"   • architectures     : {config.architectures}")
+		print(f"   • dtype (if set)    : {config.dtype}")
+		print()
+	
+	# ========== Determine model class ==========
+	model_cls = None
+	if config.architectures:
+		cls_name = config.architectures[0]
+		if hasattr(tfs, cls_name):
+			model_cls = getattr(tfs, cls_name)
+	
+	if model_cls is None:
+		raise ValueError(f"Unable to locate model class for architecture(s): {config.architectures}")
+		
+	dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+	if verbose:
+		print(f"[INFO] {model_id} Dtype selection: {dtype}")
+	
+	# ========== Optimal attention implementation ==========
+	def _optimal_attn_impl(m_id: str) -> str:
+		"""Select best available attention implementation."""
+		if not torch.cuda.is_available():
+			return "eager"
+		
+		flash_ok = False
+		try:
+			import flash_attn
+			major, _ = torch.cuda.get_device_capability()
+			flash_ok = major >= 8
+		except Exception as e:
+			if verbose:
+				print(f"[WARN] Flash Attention unavailable: {type(e).__name__}")
+			traceback.print_exc()
+		
+		if flash_ok:
+			return "flash_attention_2"
+
+		# torch >= 2.0.0 has SDPA
+		if torch.__version__ >= "2.0.0":
+			if verbose:
+				print(f"[INFO] Using SDPA attention (torch {torch.__version__})")
+			return "sdpa"
+
+		return "eager"
+	
+	attn_impl = _optimal_attn_impl(model_id)
+	if verbose:
+		print(f"[INFO] {model_id} Attention implementation: {attn_impl}")
+	
+	# ========== Quantization config ==========
+	quantization_config = None
+	if use_quantization:
+		if quantization_bits == 8:
+			quantization_config = tfs.BitsAndBytesConfig(
+				load_in_8bit=True,
+				bnb_8bit_compute_dtype=dtype,
+				llm_int8_enable_fp32_cpu_offload=False, # avoid offloading to CPU
+			)
+		elif quantization_bits == 4:
+			quantization_config = tfs.BitsAndBytesConfig(
+				load_in_4bit=True,
+				bnb_4bit_quant_type="nf4",
+				bnb_4bit_compute_dtype=torch.bfloat16,
+				bnb_4bit_use_double_quant=True,
+			)
+		else:
+			raise ValueError(f"quantization_bits must be 4 or 8, got {quantization_bits}")
+		
+		if verbose:
+			print(f"[INFO] {model_id} Quantization enabled")
+			print(f"\t• Bits                : {quantization_bits}")
+			print(f"\t• Config object type  : {type(quantization_config).__name__}")
+	
+	# ========== Processor loading ==========
+	processor = tfs.AutoProcessor.from_pretrained(
+		model_id,
+		use_fast=True,
+		trust_remote_code=True,
+		cache_dir=cache_directory[USER],
+		quantization_config=quantization_config,
+	)
+	if verbose:
+		print(f"[INFO] {model_id} Processor: {processor.__class__.__name__}")
+	
+	# Extract tokenizer
+	if hasattr(processor, "tokenizer"):
+		tokenizer = processor.tokenizer
+	elif hasattr(processor, "text_tokenizer"):
+		tokenizer = processor.text_tokenizer
+	else:
+		raise ValueError("Unable to locate tokenizer in processor")
+	if hasattr(tokenizer, "padding_side") and tokenizer.padding_side is not None:
+		tokenizer.padding_side = "left"
+	
+	# def get_estimated_gb_size(m_id: str) -> float:
+	# 	info = huggingface_hub.model_info(m_id, token=hf_tk)
+	# 	try:
+	# 		if hasattr(info, "safetensors") and info.safetensors:
+	# 			total_bytes = info.safetensors.total
+	# 			if total_bytes > 0:
+	# 				size_gb = total_bytes / (1024 ** 3)
+	# 				return size_gb
+	# 	except Exception as e:
+	# 		print(f"<!> Failed to estimate model size from safetensors: {e}")
+	# 		raise e
+
+
+	def _model_info_to_dict(info):
+			"""Version‑agnostic conversion of ModelInfo → plain dict."""
+			if hasattr(info, "model_dump"):
+					return info.model_dump()
+			if hasattr(info, "dict"):
+					return info.dict()
+			if hasattr(info, "to_dict"):
+					return info.to_dict()
+			# Fallback – public attributes only
+			return {k: v for k, v in vars(info).items() if not k.startswith("_")}
+
+	def get_estimated_gb_size(m_id: str) -> float:
+		info = huggingface_hub.model_info(m_id, token=hf_tk, files_metadata=True)
+		print(type(info))
+		print(info)
+		# Method 1: safetensors metadata (some models have this)
+		if hasattr(info, "safetensors") and info.safetensors:
+			print(f"[INFO] {m_id} has safetensors metadata")
+			total_bytes = getattr(info.safetensors, "total", None)
+			if total_bytes and total_bytes > 0:
+				return total_bytes / (1024 ** 3)
+		
+		# Method 2: sum individual weight file sizes
+		if info.siblings:
+			print(f"[INFO] {m_id} has {len(info.siblings)} siblings")
+			total_bytes = sum(
+				s.size for s in info.siblings
+				if s.size is not None and (
+					s.rfilename.endswith(".safetensors") or
+					s.rfilename.endswith(".bin")
+				)
+			)
+			if total_bytes > 0:
+				return total_bytes / (1024 ** 3)
+		raise ValueError(f"Could not estimate size for {m_id}")
+
+	estimated_size_gb = get_estimated_gb_size(model_id)
+	
+	if verbose:
+		print(f"[INFO] {model_id} Estimated size: {estimated_size_gb:.2f} GB (fp16)")
+	
+	# ========== Dynamic Device Strategy with Adaptive VRAM Buffering ==========
+	max_memory = {}
+	
+	if n_gpus > 0:
+		total_vram_available = 0
+		gpu_vram = []
+		
+		for i in range(n_gpus):
+			props = torch.cuda.get_device_properties(i)
+			if verbose:
+				print(f"GPU {i}: {props}")
+			vram_gb = props.total_memory / (1024**3)
+			gpu_vram.append(vram_gb)
+			total_vram_available += vram_gb
+		
+		# ADAPTIVE BUFFER: Scale based on GPU size
+		# Small GPUs (<10GB): 0.7GB buffer
+		# Medium GPUs (10-20GB): 2GB buffer
+		# Large GPUs (>20GB): 4GB buffer
+		if gpu_vram[0] < 10:
+			vram_buffer_gb = 0.7
+		elif gpu_vram[0] < 20:
+			vram_buffer_gb = 2.0
+		else:
+			vram_buffer_gb = 4.0
+		if verbose:
+			print(f"[INFO] VRAM buffer: {vram_buffer_gb:.2f} GB")
+
+		# For quantization, reduce buffer further
+		if use_quantization:
+			vram_buffer_gb = max(0.5, vram_buffer_gb * 0.5)
+			if verbose:
+				print(f"[INFO] Quantization enabled - reducing VRAM buffer to {vram_buffer_gb:.1f} GB")
+				
+		# Adjust estimated size for quantization
+		adjusted_size = estimated_size_gb
+		if use_quantization:
+			if quantization_bits == 8:
+				adjusted_size = estimated_size_gb * 0.5
+			elif quantization_bits == 4:
+				adjusted_size = estimated_size_gb * 0.25
+			
+			if verbose:
+				print(f"[INFO] Adjusted size for {quantization_bits}-bit quantization: {adjusted_size:.1f} GB")
+		
+		# ========== PRE-FLIGHT VRAM VALIDATION ==========
+		# Account for overhead: model weights + activations + gradients + overhead
+		# Rule of thumb: need X.Xx model size for inference (2x for training)
+		INFERENCE_OVERHEAD_MULTIPLIER = 1.5
+		required_vram = adjusted_size * INFERENCE_OVERHEAD_MULTIPLIER
+		usable_vram = total_vram_available - (n_gpus * vram_buffer_gb)
+
+		if verbose:
+			print(f"\n[VRAM CHECK] Pre-flight validation:")
+			print(f"\t• Estimated Model size (fp16): {adjusted_size:.1f} GB (with {INFERENCE_OVERHEAD_MULTIPLIER}x overhead): {required_vram:.1f} GB")
+			print(f"\t• Available VRAM (total):      {total_vram_available:.1f} GB")
+			print(f"\t• Available VRAM (usable):     {usable_vram:.1f} GB ({n_gpus}x GPU(s), {vram_buffer_gb:.1f} GB buffer per GPU)")
+
+		# Check if model will fit
+		if required_vram > usable_vram:
+			print("\n" + "="*80)
+			print("❌ INSUFFICIENT VRAM ERROR")
+			print("="*80)
+			print(f"\nModel: {model_id}")
+			print(f"Estimated Model size: {adjusted_size:.1f} GB")
+			print(f"Required VRAM (with overhead): {required_vram:.1f} GB")
+			print(f"Available VRAM: {usable_vram:.1f} GB ({n_gpus}x GPUs)")
+			print(f"\nDeficit: {required_vram - usable_vram:.1f} GB SHORT")
+			print("\nSOLUTIONS:")
+			
+			if not use_quantization:
+				print("\n1. ✅ ENABLE QUANTIZATION (Recommended):")
+				print("   use_quantization=True, quantization_bits=8")
+				quant8_size = estimated_size_gb * 0.5
+				quant8_required = quant8_size * INFERENCE_OVERHEAD_MULTIPLIER
+				quant8_fits = "✅ YES" if quant8_required < usable_vram else "❌ NO, try 4-bit"
+				print(f"   → Reduces size to ~{quant8_size:.1f} GB")
+				print(f"   → Required VRAM: ~{quant8_required:.1f} GB")
+				print(f"   → Will fit: {quant8_fits}")
+				
+				print("\n2. ⚠️  ENABLE 4-BIT QUANTIZATION (More aggressive):")
+				print("   use_quantization=True, quantization_bits=4")
+				quant4_size = estimated_size_gb * 0.25
+				quant4_required = quant4_size * INFERENCE_OVERHEAD_MULTIPLIER
+				print(f"   → Reduces size to ~{quant4_size:.1f} GB")
+				print(f"   → Required VRAM: ~{quant4_required:.1f} GB")
+				print(f"   → Will fit: ✅ YES")
+			else:
+				if quantization_bits == 8:
+					print("\n1. ⚠️  TRY 4-BIT QUANTIZATION:")
+					print("   quantization_bits=4")
+					quant4_size = estimated_size_gb * 0.25
+					quant4_required = quant4_size * INFERENCE_OVERHEAD_MULTIPLIER
+					print(f"   → Reduces size to ~{quant4_size:.1f} GB")
+					print(f"   → Required VRAM: ~{quant4_required:.1f} GB")
+				
+				print("\n2. 🔄 USE LARGER GPU:")
+				print("   • A100 80GB available")
+				print("   • Switch to Mahti gpusmall partition")
+				
+				print("\n3. 📉 USE SMALLER MODEL:")
+				print("   • Qwen3-VL-8B-Instruct (~16 GB)")
+				print("   • Qwen2.5-VL-7B-Instruct (~14 GB)")
+			
+			print("\n" + "="*80 + "\n")
+			
+			raise RuntimeError(
+				f"Model requires {required_vram:.2f} GB but only {usable_vram:.2f} GB available. "
+				f"Enable quantization or use larger GPU."
+			)
+
+		if verbose:
+			print(f"[VRAM] PASSED: Model will fit!")
+
+		# Decision: Single GPU vs Multi GPU
+		single_gpu_capacity = gpu_vram[0] - vram_buffer_gb
+		if verbose:
+			print(f"\t• Single GPU capacity: {single_gpu_capacity:.1f} GB (GPU VRAM: {gpu_vram[0]:.1f} GB - {vram_buffer_gb:.1f} GB buffer)")
+		is_large_model = adjusted_size >= 20
+		if verbose:
+			print(f"\t• is {model_id} Large? ({adjusted_size:.1f} > 20GB) : {is_large_model}")
+		use_single_gpu = (
+			not force_multi_gpu and
+			not is_large_model and  # Don't use single GPU for large models
+			adjusted_size < single_gpu_capacity * 0.8 and  # 80% safety margin
+			(n_gpus == 1 or adjusted_size < 20)
+		)
+		
+		if use_single_gpu:
+			max_memory[0] = f"{max(1, single_gpu_capacity):.0f}GB"
+			strategy_desc = f"Single GPU (GPU 0, limit: {max_memory[0]})"
+		else:
+			# Multi-GPU distribution [Model Parallelism]
+			for i in range(n_gpus):
+				# Smaller buffer on secondary GPUs
+				if gpu_vram[i] < 10:
+					buffer = vram_buffer_gb if i == 0 else 0.5
+				else:
+					buffer = vram_buffer_gb if i == 0 else 2
+				
+				if use_quantization:
+					buffer = buffer * 0.5
+				
+				max_memory[i] = f"{max(1, gpu_vram[i] - buffer):.0f}GB"
+			
+			total_usable = sum(float(v.replace('GB', '')) for v in max_memory.values())
+			strategy_desc = f"{model_id} is too large ({adjusted_size:.2f} GB + {INFERENCE_OVERHEAD_MULTIPLIER:.1f}x overhead = {required_vram:.2f} GB) to fit in a single GPU ({single_gpu_capacity:.2f} GB) => Multi-GPU [Model Parallelism] ({n_gpus} Available GPUs, {total_usable:.0f}GB total)"
+			
+			if verbose:
+				print(f"[INFO] Using multi-GPU strategy:")
+				print(f"• Estimated model size: {estimated_size_gb:.1f} GB (fp16)")
+				if use_quantization:
+					print(f"• Adjusted for quantization: {adjusted_size:.1f} GB")
+				print(f"• Single GPU capacity: {single_gpu_capacity:.1f} GB")
+				print(f"• Total VRAM: {total_vram_available:.1f} GB")
+				if force_multi_gpu:
+					print(f"• Reason: force_multi_gpu=True")
+	else:
+		strategy_desc = "CPU (no GPUs)"
+	
+	if verbose:
+		print(f"\n[INFO] {strategy_desc}")
+		if max_memory:
+			print(f"Max memory per GPU:")
+			for gpu_id, limit in max_memory.items():
+				print(f"\tGPU {gpu_id}: {limit}")
+	
+	# ========== Base Model Loading Kwargs ==========
+	base_model_kwargs: Dict[str, Any] = {
+		"low_cpu_mem_usage": True,
+		"trust_remote_code": True,
+		"cache_dir": cache_directory[USER],
+		"attn_implementation": attn_impl,
+		"dtype": dtype,
+	}
+	
+	if use_quantization:
+		base_model_kwargs["quantization_config"] = quantization_config
+	
+	# ========== Load Model ==========
+	model = None
+	try:
+		if n_gpus > 0:
+			model = model_cls.from_pretrained(
+				model_id,
+				**base_model_kwargs,
+				device_map="auto",
+				max_memory=max_memory,
+			)
+		else:
+			model = model_cls.from_pretrained(
+				model_id,
+				**base_model_kwargs,
+			)	
+	except Exception as e:
+		if verbose:
+			print(f"[ERROR] Failed to load model: {e}")
+		raise e
+	
+	model.eval()
+	
+	# ========== Model Info & Verification ==========
+	if verbose:
+		print(f"\n[MODEL] {model_id} {model.__class__.__name__}")
+		try:
+			first_param = next(model.parameters())
+			print(f"   • First parameter dtype: {first_param.dtype}")
+			print(f"   • First parameter device: {first_param.device}")
+		except StopIteration:
+			pass
+		
+		total_params = sum(p.numel() for p in model.parameters())
+		approx_fp16_gb = total_params * 2 / (1024 ** 3)
+		approx_fp8_gb = total_params * 1 / (1024 ** 3)
+		approx_fp4_gb = total_params * 0.5 / (1024 ** 3)
+		
+		print(f"   • Total parameters: {total_params:,}")
+		print(f"   • Actual model size (fp16): {approx_fp16_gb:.2f} GB")
+		if use_quantization:
+			if quantization_bits == 8:
+				print(f"   • Actual model size (int8): {approx_fp8_gb:.2f} GB")
+			elif quantization_bits == 4:
+				print(f"   • Actual model size (int4): {approx_fp4_gb:.2f} GB")
+		
+		# Validate estimation
+		estimation_error = abs(estimated_size_gb - approx_fp16_gb) / approx_fp16_gb * 100
+		if estimation_error > 50:
+			print(f"   ⚠️  WARNING: Size estimation was off by {estimation_error:.0f}%!")
+			print(f"      Estimated: {estimated_size_gb:.1f} GB, Actual: {approx_fp16_gb:.1f} GB")
+		
+		if hasattr(model, "hf_device_map"):
+			dm = model.hf_device_map
+			
+			# Check for disk offloading
+			disk_layers = [k for k, v in dm.items() if v == "disk"]
+			cpu_layers = [k for k, v in dm.items() if v == "cpu"]
+			
+			if disk_layers:
+				print(f"\n{'='*70}")
+				print(f"❌ CRITICAL WARNING: {len(disk_layers)} layers on DISK!")
+				print(f"{'='*70}")
+				print(f"This will cause 100-1000x slowdown!")
+				print(f"\nSOLUTIONS:")
+				print(f"  1. Use quantization: use_quantization=True, quantization_bits=8")
+				print(f"  2. Force multi-GPU: force_multi_gpu=True")
+				print(f"  3. Use smaller model variant")
+				print(f"  4. Use 4-bit quantization for even more memory savings")
+				print(f"{'='*70}\n")
+			
+			if cpu_layers:
+				print(f"\n⚠️  WARNING: {len(cpu_layers)} layers on CPU (slower than GPU)")
+			
+			# Count GPU distribution
+			gpu_counts = {}
+			for layer_name, device in dm.items():
+				if isinstance(device, int):
+					gpu_counts[device] = gpu_counts.get(device, 0) + 1
+			
+			if gpu_counts:
+				print(f"\n[INFO] GPU Distribution:")
+				total_gpu_layers = sum(gpu_counts.values())
+				for gpu_id in sorted(gpu_counts.keys()):
+					count = gpu_counts[gpu_id]
+					pct = count / total_gpu_layers * 100 if total_gpu_layers > 0 else 0
+					print(f"   • GPU {gpu_id}: {count} layers ({pct:.1f}%)")
+			
+			# Show device map only if there are issues
+			if disk_layers or cpu_layers:
+				print(f"\n[INFO] Device map (showing problematic layers):")
+				for k, v in dm.items():
+					if v in ["disk", "cpu"]:
+						print(f"   {k}: {v}")
+			elif not disk_layers and not cpu_layers:
+				print(f"\n✅ All layers on GPU - optimal performance!")
+		print(f"[MODEL] Loading of {model_id} complete!")
+		print(f"{'='*110}\n")
+
+	return processor, model
+
+def _load_llm_old(
+	model_id: str,
+	use_quantization: bool = False,
+	quantization_bits: int = 8,
+	force_multi_gpu: bool = False,
+	verbose: bool = False,
+) -> Tuple[tfs.PreTrainedTokenizerBase, torch.nn.Module]:
+	"""
+	Load a Large Language Model with optimal device placement.
+	
+	Implements intelligent device strategy:
+	1. For small models (<20GB): Single GPU for speed
+	2. For large models (>=20GB): Multi-GPU distribution
+	3. Adaptive VRAM buffering based on GPU size
+	4. Quantization-aware memory allocation
+	5. Avoids disk offloading at all costs
+	
+	Args:
+		model_id: HuggingFace model identifier
+		use_quantization: Whether to use quantization
+		quantization_bits: Quantization bits (4 or 8)
+		force_multi_gpu: Force multi-GPU distribution (for large models)
+		verbose: Enable verbose logging
+	
+	Returns:
+		Tuple of (tokenizer, model)
+	"""
+	if verbose:
+		print(f"\n{'='*110}")
+		print(f"[MODEL] Loading {model_id} on cache_dir: {cache_directory.get(USER)}")
+
+	# ========== Version and CUDA info ==========
+	n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+	if verbose:
+		print(f"[VERSIONS] torch : {torch.__version__} transformers: {tfs.__version__}")
+		print(f"[INFO] CUDA available?        : {torch.cuda.is_available()} {n_gpus} GPU(s) available: {[torch.cuda.get_device_name(i) for i in range(n_gpus)]}")
+		if torch.cuda.is_available():
+			cur = torch.cuda.current_device()
+			major, minor = torch.cuda.get_device_capability(cur)
+			print(f"[INFO] Compute capability     : {major}.{minor}")
+			print(f"[INFO] BF16 support?          : {torch.cuda.is_bf16_supported()}")
+			print(f"[INFO] CUDA memory allocated  : {torch.cuda.memory_allocated(cur)//(1024**2)} MiB")
+			print(f"[INFO] CUDA memory reserved   : {torch.cuda.memory_reserved(cur)//(1024**2)} MiB")
+		else:
+			print("[INFO] Running on CPU only")
+
+	# ========== HuggingFace login ==========
+	try:
+		if verbose:
+			print(f"[LOGIN INFO] HuggingFace Hub...")
+		huggingface_hub.login(token=hf_tk)
+	except Exception as e:
+		print(f"<!> Failed to login to HuggingFace Hub:\n{e}")
+		raise e
+
+	# ========== Load config ==========
+	config = tfs.AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+	if verbose:
+		print(f"[INFO] {model_id} Config summary")
+		print(f"   • model_type        : {config.model_type}")
+		print(f"   • architectures     : {config.architectures}")
+		print(f"   • dtype (if set)    : {config.dtype}")
+		print()
+	
+	# ========== Determine model class ==========
+	model_cls = None
+	use_auto_model = False
+	
+	if config.architectures:
+		cls_name = config.architectures[0]
+		if hasattr(tfs, cls_name):
+			model_cls = getattr(tfs, cls_name)
+			if verbose:
+				print(f"[INFO] Resolved model class from transformers → {model_cls.__name__}\n")
+		else:
+			# Custom architecture - will use AutoModelForCausalLM
+			use_auto_model = True
+			if verbose:
+				print(f"[INFO] Custom architecture detected: {cls_name}")
+				print(f"[INFO] Will use AutoModelForCausalLM with trust_remote_code=True\n")
+	else:
+		# No architecture specified - use AutoModelForCausalLM
+		use_auto_model = True
+		if verbose:
+			print(f"[INFO] No architecture specified in config")
+			print(f"[INFO] Will use AutoModelForCausalLM\n")
+
+	dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
+	if verbose:
+		print(f"[INFO] {model_id} Dtype selection: {dtype}")
+
+	def _optimal_attn_impl(m_id: str) -> str:
+		"""Select best available attention implementation."""
+		if not torch.cuda.is_available():
+			return "eager"
+		
+		major, minor = torch.cuda.get_device_capability()
+		compute_cap = major + minor / 10
+		
+		# Flash Attention 2 requires Ampere or newer (compute >= 8.0)
+		if compute_cap >= 8.0:
+			try:
+				import flash_attn
+				if verbose:
+					print(f"[INFO] Flash Attention 2 available (compute {compute_cap})")
+				return "flash_attention_2"
+			except ImportError:
+				if verbose:
+					print(f"[WARN] Flash Attention 2 not installed (pip install flash-attn)")
+		
+		# For older GPUs (Volta/Turing), use SDPA (PyTorch native, faster than eager)
+		if compute_cap >= 7.0:
+			if torch.__version__ >= "2.0.0":
+				if verbose:
+					print(f"[INFO] Using SDPA attention (compute {compute_cap}, PyTorch {torch.__version__})")
+				return "sdpa"		
+		if verbose:
+			print(f"[INFO] Using eager attention (compute {compute_cap})")
+		return "eager"
+
+	attn_impl = _optimal_attn_impl(model_id)
+	if verbose:
+		print(f"[INFO] {model_id} Attention implementation: {attn_impl}")
+
+	# ========== Quantization config ==========
+	quantization_config = None
+	if use_quantization:
+		if quantization_bits == 8:
+			quantization_config = tfs.BitsAndBytesConfig(
+				load_in_8bit=True,
+				bnb_8bit_compute_dtype=dtype,
+				llm_int8_enable_fp32_cpu_offload=False,  # avoid offloading to CPU
+			)
+		elif quantization_bits == 4:
+			quantization_config = tfs.BitsAndBytesConfig(
+				load_in_4bit=True,
+				bnb_4bit_quant_type="nf4",
+				bnb_4bit_compute_dtype=torch.bfloat16,
+				bnb_4bit_use_double_quant=True,
+			)
+		else:
+			raise ValueError(f"quantization_bits must be 4 or 8, got {quantization_bits}")
+		
+		if verbose:
+			print(f"[INFO] {model_id} Quantization enabled")
+			print(f"\t• Bits                : {quantization_bits}")
+			print(f"\t• Config object type  : {type(quantization_config).__name__}")
+	
+	# ========== Tokenizer loading ==========
+	tokenizer = None
+	try:
+		tokenizer = tfs.AutoTokenizer.from_pretrained(
+			model_id,
+			use_fast=True,
+			trust_remote_code=True,
+			cache_dir=cache_directory[USER],
+		)
+	except (KeyError, ValueError, OSError) as exc:
+		if verbose:
+			print(f"[WARN] AutoTokenizer failed: {exc}")
+			print("[INFO] Trying specific tokenizer classes...")
+		
+		fallback_exc = None
+		candidate_tokenizer_classes = [
+			getattr(tfs, "MistralTokenizer", None),
+			getattr(tfs, "MistralTokenizerFast", None),
+			getattr(tfs, "LlamaTokenizer", None),
+			getattr(tfs, "LlamaTokenizerFast", None),
+		]
+		
+		candidate_tokenizer_classes = [cls for cls in candidate_tokenizer_classes if cls is not None]
+		
+		for TokCls in candidate_tokenizer_classes:
+			try:
+				if verbose:
+					print(f"[DEBUG] Trying {TokCls.__name__}...")
+				
+				tokenizer = TokCls.from_pretrained(
+					model_id,
+					trust_remote_code=True,
+					cache_dir=cache_directory[USER],
+				)
+				
+				if verbose:
+					print(f"[SUCCESS] Loaded tokenizer using {TokCls.__name__}")
+				break
+			except Exception as e:
+				fallback_exc = e
+				if verbose:
+					print(f"[DEBUG] {TokCls.__name__} failed: {e}")
+				continue
+
+		if tokenizer is None:
+			if verbose:
+				print("[INFO] All specific tokenizer classes failed, trying AutoTokenizer with use_fast=False...")
+			try:
+				tokenizer = tfs.AutoTokenizer.from_pretrained(
+					model_id,
+					use_fast=False,
+					trust_remote_code=True,
+					cache_dir=cache_directory[USER],
+				)
+				if verbose:
+					print("[SUCCESS] Loaded tokenizer using AutoTokenizer with use_fast=False")
+			except Exception as final_exc:
+				raise RuntimeError(
+					f"Failed to load tokenizer for '{model_id}'. "
+					f"AutoTokenizer error: {exc}. "
+					f"Fallback errors: {fallback_exc}. "
+					f"Final attempt error: {final_exc}"
+				) from final_exc
+
+	if tokenizer.pad_token is None:
+		tokenizer.pad_token = tokenizer.eos_token
+		tokenizer.pad_token_id = tokenizer.eos_token_id
+	
+	if hasattr(tokenizer, "padding_side") and tokenizer.padding_side is not None:
+		tokenizer.padding_side = "left"
+
+	if verbose:
+		print(f"[TOKENIZER] {tokenizer.__class__.__name__}")
+		print(f"   • vocab size        : {tokenizer.vocab_size:>20,}")
+		print(f"   • padding side      : {tokenizer.padding_side:>20}")
+		print()
+	
+	def get_estimated_gb_size(model_id: str) -> float:
+		try:
+			info = huggingface_hub.model_info(model_id, token=hf_tk, files_metadata=True)
+		except Exception as e:
+			raise ValueError(f"Failed to fetch model info for {model_id}: {e}")
+
+		print(type(info))
+		print(info)
+
+		disk_bytes = 0
+		param_count = None
+
+		# 1. Sum actual file sizes (most reliable when available)
+		if info.siblings:
+			for s in info.siblings:
+				if s.size and (s.rfilename.endswith(".safetensors") or s.rfilename.endswith(".bin")):
+					disk_bytes += s.size
+
+		# 2. Try safetensors metadata (parameter count)
+		if hasattr(info, "safetensors") and info.safetensors:
+			safet = info.safetensors
+			if isinstance(safet, dict):
+				param_count = safet.get("total")
+			elif hasattr(safet, "total"):
+				param_count = safet.total
+
+		# 3. Choose best source and apply realistic multiplier
+		if disk_bytes > 0:
+			print(f"disk_bytes: {disk_bytes}")
+			# Disk size already in target dtype → small overhead (1%) (alignment, buffers)
+			est_gb = (disk_bytes * 1.01) / (1024 ** 3)
+
+			return est_gb
+
+		if param_count:
+			print(f"param_count: {param_count}")
+			# fp16/bf16 = 2 bytes/param + 18–25% overhead
+			est_bytes = param_count * 2.0 * 1.22
+			est_gb = est_bytes / (1024 ** 3)
+
+			return est_gb
+
+		raise ValueError(
+			f"No usable size info for {model_id}. "
+			"No file sizes, parameter count, or safetensors metadata available."
+		)
+
+	estimated_size_gb = get_estimated_gb_size(model_id)
+	if verbose:
+		print(f"\n[INFO] {model_id} Estimated size: {estimated_size_gb:.2f} GB (fp16)")
+		
+	if n_gpus > 0:
+		total_vram_available = 0
+		gpu_vram = []
+		
+		for i in range(n_gpus):
+			props = torch.cuda.get_device_properties(i)
+			if verbose:
+				print(f"GPU {i}: {props}")
+			vram_gb = props.total_memory / (1024**3)
+			gpu_vram.append(vram_gb)
+			total_vram_available += vram_gb
+			
+		# if estimated_size_gb > total_vram_available:
+		# 	raise RuntimeError(f"Model {model_id} is too large to fit in available VRAM. Estimated size: {estimated_size_gb:.2f} GB, Available VRAM: {total_vram_available:.2f} GB")
+
+		# ADAPTIVE BUFFER: Scale based on GPU size
+		if gpu_vram[0] < 10:
+			vram_buffer_gb = 0.7
+		elif gpu_vram[0] < 20:
+			vram_buffer_gb = 2.0
+		else:
+			vram_buffer_gb = 4.0
+		if verbose:
+			print(f"[INFO] VRAM buffer: {vram_buffer_gb:.2f} GB")
+
+
+		# For quantization, reduce buffer further
+		if use_quantization:
+			vram_buffer_gb = max(0.5, vram_buffer_gb * 0.5)
+			if verbose:
+				print(f"[INFO] Quantization enabled - reducing VRAM buffer to {vram_buffer_gb:.1f} GB")
+				
+		# Adjust estimated size for quantization
+		adjusted_size = estimated_size_gb
+		if use_quantization:
+			if quantization_bits == 8:
+				adjusted_size = estimated_size_gb * 0.5
+			elif quantization_bits == 4:
+				adjusted_size = estimated_size_gb * 0.25
+			
+			if verbose:
+				print(f"[INFO] Adjusted size for {quantization_bits}-bit quantization: {adjusted_size:.1f} GB")
+		
+		# ========== PRE-FLIGHT VRAM VALIDATION ==========
+		INFERENCE_OVERHEAD_MULTIPLIER = 1.3
+		required_vram = adjusted_size * INFERENCE_OVERHEAD_MULTIPLIER
+		usable_vram = total_vram_available - (n_gpus * vram_buffer_gb)
+
+		if verbose:
+			print(f"\n[VRAM CHECK] Pre-flight validation:")
+			print(f"\t• Estimated Model size (fp16): {adjusted_size:.2f} GB (with {INFERENCE_OVERHEAD_MULTIPLIER}x overhead): {required_vram:.2f} GB")
+			print(f"\t• Available VRAM (total):      {total_vram_available:.1f} GB")
+			print(f"\t• Available VRAM (usable):     {usable_vram:.1f} GB ({n_gpus}x GPU(s), {vram_buffer_gb:.1f} GB buffer per GPU)")
+
+		# Check if model will fit
+		if required_vram > usable_vram:
+			print("\n" + "="*80)
+			print("❌ INSUFFICIENT VRAM ERROR")
+			print("="*80)
+			print(f"\nModel: {model_id}")
+			print(f"Estimated Model size: {adjusted_size:.1f} GB")
+			print(f"Required VRAM (with overhead): {required_vram:.1f} GB")
+			print(f"Available VRAM: {usable_vram:.1f} GB ({n_gpus}x GPUs)")
+			print(f"\nDeficit: {required_vram - usable_vram:.1f} GB SHORT")
+			print("\nSOLUTIONS:")
+			
+			if not use_quantization:
+				print("\n1. ✅ ENABLE QUANTIZATION (Recommended):")
+				print("   use_quantization=True, quantization_bits=8")
+				quant8_size = estimated_size_gb * 0.5
+				quant8_required = quant8_size * INFERENCE_OVERHEAD_MULTIPLIER
+				quant8_fits = "✅ YES" if quant8_required < usable_vram else "❌ NO, try 4-bit"
+				print(f"   → Reduces size to ~{quant8_size:.1f} GB")
+				print(f"   → Required VRAM: ~{quant8_required:.1f} GB")
+				print(f"   → Will fit: {quant8_fits}")
+				
+				print("\n2. ⚠️  ENABLE 4-BIT QUANTIZATION (More aggressive):")
+				print("   use_quantization=True, quantization_bits=4")
+				quant4_size = estimated_size_gb * 0.25
+				quant4_required = quant4_size * INFERENCE_OVERHEAD_MULTIPLIER
+				print(f"   → Reduces size to ~{quant4_size:.1f} GB")
+				print(f"   → Required VRAM: ~{quant4_required:.1f} GB")
+				print(f"   → Will fit: ✅ YES")
+			else:
+				if quantization_bits == 8:
+					print("\n1. ⚠️  TRY 4-BIT QUANTIZATION:")
+					print("   quantization_bits=4")
+					quant4_size = estimated_size_gb * 0.25
+					quant4_required = quant4_size * INFERENCE_OVERHEAD_MULTIPLIER
+					print(f"   → Reduces size to ~{quant4_size:.1f} GB")
+					print(f"   → Required VRAM: ~{quant4_required:.1f} GB")
+				
+				print("\n2. 🔄 USE LARGER GPU:")
+				print("   • A100 80GB available")
+				print("   • Switch to Mahti gpusmall partition")
+				
+				print("\n3. 📉 USE SMALLER MODEL:")
+				print("   • Consider smaller model variants")
+			
+			print("\n" + "="*80 + "\n")
+			
+			raise RuntimeError(
+				f"Model requires {required_vram:.2f} GB but only {usable_vram:.2f} GB available. "
+				f"Enable quantization or use larger GPU."
+			)
+
+		if verbose:
+			print(f"[VRAM] PASSED: Model will fit!")
+
+		# Decision: Single GPU vs Multi GPU
+		single_gpu_capacity = gpu_vram[0] - vram_buffer_gb
+		is_large_model = adjusted_size >= 20
+		if verbose:
+			print(f"\t• Single GPU capacity: {single_gpu_capacity:.1f} GB (GPU VRAM: {gpu_vram[0]:.1f} GB - {vram_buffer_gb:.1f} GB buffer)")
+			print(f"\t• is {model_id} Large? ({adjusted_size:.1f} > 20GB) : {is_large_model}")
+
+		use_single_gpu = (
+			not force_multi_gpu and
+			not is_large_model and
+			adjusted_size < single_gpu_capacity * 0.8 and
+			(n_gpus == 1 or adjusted_size < 20)
+		)
+
+		max_memory = {}
+		if use_single_gpu:
+			max_memory[0] = f"{max(1, single_gpu_capacity):.0f}GB"
+			strategy_desc = f"Single GPU (GPU 0, limit: {max_memory[0]})"
+		else:
+			# Multi-GPU distribution [Model Parallelism]
+			for i in range(n_gpus):
+				if gpu_vram[i] < 10:
+					buffer = vram_buffer_gb if i == 0 else 0.5
+				else:
+					buffer = vram_buffer_gb if i == 0 else 2
+				
+				if use_quantization:
+					buffer = buffer * 0.5
+				
+				max_memory[i] = f"{max(1, gpu_vram[i] - buffer):.0f}GB"
+			
+			total_usable = sum(float(v.replace('GB', '')) for v in max_memory.values())
+			strategy_desc = f"{model_id} is too large ({adjusted_size:.2f} GB + {INFERENCE_OVERHEAD_MULTIPLIER:.1f}x overhead = {required_vram:.2f} GB) to fit in a single GPU ({single_gpu_capacity:.2f} GB) => Multi-GPU [Model Parallelism] ({n_gpus} Available GPUs, {total_usable:.0f}GB total)"
+			
+			if verbose:
+				print(f"[INFO] Using multi-GPU strategy:")
+				print(f"• Estimated model size: {estimated_size_gb:.1f} GB (fp16)")
+				if use_quantization:
+					print(f"• Adjusted for quantization: {adjusted_size:.1f} GB")
+				print(f"• Single GPU capacity: {single_gpu_capacity:.1f} GB")
+				print(f"• Total VRAM: {total_vram_available:.1f} GB")
+				if force_multi_gpu:
+					print(f"• Reason: force_multi_gpu=True")
+	else:
+		strategy_desc = "CPU (no GPUs)"
+	
+	if verbose:
+		print(f"\n[INFO] {strategy_desc}")
+		if max_memory:
+			print(f"Max memory per GPU:")
+			for gpu_id, limit in max_memory.items():
+				print(f"\tGPU {gpu_id}: {limit}")
+
+	# ========== Model loading kwargs ==========
+	model_kwargs: Dict[str, Any] = {
+		"low_cpu_mem_usage": True,
+		"trust_remote_code": True,
+		"cache_dir": cache_directory[USER],
+		"attn_implementation": attn_impl,  # ← Flash Attention 2 support added here
+		"dtype": dtype,
+	}
+	
+	if use_quantization:
+		model_kwargs["quantization_config"] = quantization_config
+	
+	if n_gpus > 0:
+		model_kwargs["device_map"] = "auto"
+		model_kwargs["max_memory"] = max_memory
+
+	if verbose:
+		model_loader_name = "AutoModelForCausalLM" if use_auto_model else model_cls.__name__
+		print(f"\n[INFO] Model loading kwargs for {model_loader_name}:")
+		for k, v in model_kwargs.items():
+			if k == "quantization_config":
+				print(f"   • {k}: {type(v).__name__}")
+			elif k == "max_memory":
+				print(f"   • {k}: {v}")
+			else:
+				print(f"   • {k}: {v}")
+		print()
+
+		if torch.cuda.is_available():
+			cur = torch.cuda.current_device()
+			print("[DEBUG] CUDA memory BEFORE model load")
+			print(f"   • allocated : {torch.cuda.memory_allocated(cur)//(1024**2)} MiB")
+			print(f"   • reserved  : {torch.cuda.memory_reserved(cur)//(1024**2)} MiB\n")
+
+	# ========== Load Model ==========
+	try:
+		if use_auto_model:
+			model = tfs.AutoModelForCausalLM.from_pretrained(model_id, **model_kwargs)
+		else:
+			model = model_cls.from_pretrained(model_id, **model_kwargs)
+	except Exception as e:
+		if verbose:
+			print(f"[ERROR] Error loading model: {e}")
+		raise e
+
+	model.eval()
+
+	# ========== Model Info & Verification ==========
+	if verbose:
+		print(f"\n[MODEL] {model_id} {model.__class__.__name__}")
+		try:
+			first_param = next(model.parameters())
+			print(f"   • First parameter dtype: {first_param.dtype}")
+			print(f"   • First parameter device: {first_param.device}")
+		except StopIteration:
+			pass
+
+		total_params = sum(p.numel() for p in model.parameters())
+		approx_fp16_gb = total_params * 2 / (1024 ** 3)
+		approx_fp8_gb = total_params * 1 / (1024 ** 3)
+		approx_fp4_gb = total_params * 0.5 / (1024 ** 3)
+
+		print(f"   • Total parameters: {total_params:,}")
+		print(f"   • Actual model size (fp16) [2 bytes per BF16 parameter]:  {approx_fp16_gb:.2f} GB")
+		print(f"   • Actual model size (fp8) 	[1 byte per BF16 parameter]:   {approx_fp8_gb:.2f} GB")
+		print(f"   • Actual model size (fp4)  [0.5 byte per BF16 parameter]: {approx_fp4_gb:.2f} GB")
+		print(f"   • Available VRAM: {total_vram_available:.2f} GB")
+		if use_quantization:
+			if quantization_bits == 8:
+				print(f"   • Actual model size (int8): {approx_fp8_gb:.2f} GB")
+			elif quantization_bits == 4:
+				print(f"   • Actual model size (int4): {approx_fp4_gb:.2f} GB")
+		
+		# Validate estimation
+		estimation_error = abs(estimated_size_gb - approx_fp16_gb) / approx_fp16_gb * 100
+		if estimation_error > 50:
+			print(f"   ⚠️  WARNING: Size estimation was off by {estimation_error:.0f}%!")
+			print(f"      Estimated: {estimated_size_gb:.1f} GB, Actual: {approx_fp16_gb:.1f} GB")
+
+		if hasattr(model, "hf_device_map"):
+			dm = model.hf_device_map
+			
+			# Check for disk offloading
+			disk_layers = [k for k, v in dm.items() if v == "disk"]
+			cpu_layers = [k for k, v in dm.items() if v == "cpu"]
+			
+			if disk_layers:
+				print(f"\n{'='*70}")
+				print(f"❌ CRITICAL WARNING: {len(disk_layers)} layers on DISK!")
+				print(f"{'='*70}")
+				print(f"This will cause 100-1000x slowdown!")
+				print(f"\nSOLUTIONS:")
+				print(f"  1. Use quantization: use_quantization=True, quantization_bits=8")
+				print(f"  2. Force multi-GPU: force_multi_gpu=True")
+				print(f"  3. Use smaller model variant")
+				print(f"  4. Use 4-bit quantization for even more memory savings")
+				print(f"{'='*70}\n")
+			
+			if cpu_layers:
+				print(f"\n⚠️  WARNING: {len(cpu_layers)} layers on CPU (slower than GPU)")
+			
+			# Count GPU distribution
+			gpu_counts = {}
+			for layer_name, device in dm.items():
+				if isinstance(device, int):
+					gpu_counts[device] = gpu_counts.get(device, 0) + 1
+			
+			if gpu_counts:
+				print(f"\n[INFO] GPU Distribution:")
+				total_gpu_layers = sum(gpu_counts.values())
+				for gpu_id in sorted(gpu_counts.keys()):
+					count = gpu_counts[gpu_id]
+					pct = count / total_gpu_layers * 100 if total_gpu_layers > 0 else 0
+					print(f"   • GPU {gpu_id}: {count} layers ({pct:.1f}%)")
+			
+			# Show device map only if there are issues
+			if disk_layers or cpu_layers:
+				print(f"\n[INFO] Device map (showing problematic layers):")
+				for k, v in dm.items():
+					if v in ["disk", "cpu"]:
+						print(f"   {k}: {v}")
+			elif not disk_layers and not cpu_layers:
+				print(f"\n✅ All layers on GPU - optimal performance!")
+
+		if hasattr(model, 'generation_config'):
+			print(f"\n[GENERATION CONFIG]")
+			gen_cfg = model.generation_config
+			print(f"   • max_length: {getattr(gen_cfg, 'max_length', 'N/A')}")
+			print(f"   • temperature: {getattr(gen_cfg, 'temperature', 'N/A')}")
+			print(f"   • top_p: {getattr(gen_cfg, 'top_p', 'N/A')}")
+			print(f"   • top_k: {getattr(gen_cfg, 'top_k', 'N/A')}")
+			print(f"   • do_sample: {getattr(gen_cfg, 'do_sample', 'N/A')}")
+		
+		print(f"[MODEL] Loading of {model_id} complete!")
+		print(f"{'='*110}\n")
+
+	return tokenizer, model
+
 def get_vlm_based_labels_batched_parallel_response_parsing(
 	model_id: str,
 	device: str,
@@ -4930,224 +6583,6 @@ def _llama_llm_response(model_id: str, input_prompt: str, llm_response: str, max
 		return None
 
 
-class EarlyStoppingOld:
-	def __init__(
-			self,
-			patience: int = 5,
-			min_delta: float = 1e-3,
-			cumulative_delta: float = 0.01,
-			window_size: int = 5,
-			mode: str = 'min',
-			min_epochs: int = 5,
-			restore_best_weights: bool = True,
-			volatility_threshold: float = 10.0,
-			slope_threshold: float = 0.0,
-			pairwise_imp_threshold: float = 5e-3,
-			min_phases_before_stopping: int = 3,
-		):
-
-		self.patience = patience
-		self.min_delta = min_delta
-		self.cumulative_delta = cumulative_delta
-		self.window_size = window_size
-		self.mode = mode
-		self.min_epochs = min_epochs
-		self.restore_best_weights = restore_best_weights
-		self.volatility_threshold = volatility_threshold
-		self.slope_threshold = slope_threshold
-		self.pairwise_imp_threshold = pairwise_imp_threshold
-		self.min_phases_before_stopping = min_phases_before_stopping
-		self.sign = 1 if mode == 'min' else -1
-		print("="*100)
-		print(
-			f"EarlyStopping [initial] Configuration:\n"
-			f"\tPatience={patience}\n"
-			f"\tMinDelta={min_delta}\n"
-			f"\tCumulativeDelta={cumulative_delta}\n"
-			f"\tWindowSize={window_size}\n"
-			f"\tMinEpochs={min_epochs}\n"
-			f"\tMinPhases={min_phases_before_stopping} (only for progressive finetuning)\n"
-			f"\tVolatilityThreshold={volatility_threshold}\n"
-			f"\tSlopeThreshold={slope_threshold}\n"
-			f"\tPairwiseImpThreshold={pairwise_imp_threshold}\n"
-			f"\tRestoreBestWeights={restore_best_weights}"
-		)
-		self.reset()
-		print("="*100)
-
-	def reset(self):
-		print(">> Resetting EarlyStopping state, Essential for starting fresh or resetting between training phases")
-		self.best_score = None
-		self.best_weights = None
-		self.counter = 0
-		self.stopped_epoch = 0
-		self.best_epoch = 0
-		self.value_history = []
-		self.improvement_history = []
-		self.current_phase = 0
-		self.model_improved_this_epoch = False
-
-	def compute_volatility(self, window: List[float]) -> float:
-		if not window or len(window) < 2:
-			return 0.0
-		mean_val = np.mean(window)
-		std_val = np.std(window)
-		return (std_val / abs(mean_val)) * 100 if mean_val != 0 else 0.0
-
-	def is_improvement(self, current_value: float) -> bool:
-		if self.best_score is None:
-			return True
-		improvement = (self.best_score - current_value) * self.sign
-		return improvement > self.min_delta
-
-	def should_stop(
-			self,
-			current_value: float,
-			model: torch.nn.Module,
-			optimizer: torch.optim.Optimizer,
-			scheduler,
-			epoch: int,
-			checkpoint_path: str,
-			current_phase: Optional[int] = None,
-		) -> bool:
-
-		self.model_improved_this_epoch = False
-		self.value_history.append(current_value)
-		phase_info = f", Phase {current_phase}" if current_phase is not None else ""
-		print(f"\n--- EarlyStopping Check (Epoch {epoch+1}{phase_info}) ---")
-		print(f"Current validation loss: {current_value}")
-
-		if epoch < self.min_epochs:
-			print(f"Skipping early stopping (epoch {epoch+1} <= min_epochs {self.min_epochs})")
-			return False
-
-		if self.is_improvement(current_value):
-			print(
-				f"\t>>>> New Best Model Found! "
-				f"Loss improved from {self.best_score if self.best_score is not None else 'N/A'} to {current_value}"
-			)
-			self.best_score = current_value
-			self.best_epoch = epoch
-			self.counter = 0
-			self.improvement_history.append(True)
-			self.model_improved_this_epoch = True
-
-			if self.restore_best_weights:
-				self.best_weights = {k: v.clone().cpu().detach() for k, v in model.state_dict().items()}
-			
-			print(f"Saving new best model checkpoint (from epoch {self.best_epoch + 1}) to {checkpoint_path}")
-			checkpoint = {
-				"epoch": self.best_epoch,
-				"model_state_dict": self.best_weights if self.best_weights is not None else model.state_dict(),
-				"optimizer_state_dict": optimizer.state_dict(),
-				"scheduler_state_dict": scheduler.state_dict(),
-				"best_val_loss": self.best_score,
-			}
-			if current_phase is not None:
-				checkpoint["phase"] = current_phase
-			try:
-				torch.save(checkpoint, checkpoint_path)
-			except Exception as e:
-				print(f"Warning: Failed to save checkpoint to {checkpoint_path}: {e}")
-		else:
-			self.counter += 1
-			self.improvement_history.append(False)
-			print(
-				f"\tNO improvement! Best: {self.best_score} "
-				f"Patience: {self.counter}/{self.patience}"
-			)
-
-		if len(self.value_history) < self.window_size:
-			print(f"\tNot enough history ({len(self.value_history)} < {self.window_size}) for window-based checks.")
-			if self.counter >= self.patience:
-				phase_constraint_met = (current_phase is None) or (current_phase >= self.min_phases_before_stopping)
-				if phase_constraint_met:
-					print(f"EARLY STOPPING TRIGGERED: Patience ({self.counter}/{self.patience}) exceeded.")
-					return True
-			return False
-
-		last_window = self.value_history[-self.window_size:]
-		print(f"\tWindow ({self.window_size} epochs): {last_window}")
-
-		slope = compute_slope(window=last_window)
-		print(f"\tSlope over {self.window_size} windows: {slope} (Threshold > {self.slope_threshold})")
-		
-		volatility = self.compute_volatility(last_window)
-		print(f"\tVolatility over {self.window_size} windows: {volatility:.2f}% (Threshold >= {self.volatility_threshold}%)")
-		
-		pairwise_diffs = [(last_window[i] - last_window[i+1]) * self.sign for i in range(len(last_window)-1)]
-		pairwise_imp_avg = np.mean(pairwise_diffs) if pairwise_diffs else 0.0
-		print(f"\tAvg Pairwise Improvement: {pairwise_imp_avg} (Threshold < {self.pairwise_imp_threshold})")
-		
-		close_to_best = abs(current_value - self.best_score) < self.min_delta if self.best_score is not None else False
-		print(f"\tClose to best score ({self.best_score}): {close_to_best}")
-		
-		window_start_value = self.value_history[-self.window_size]
-		window_end_value = self.value_history[-1]
-		cumulative_improvement_signed = (window_start_value - window_end_value) * self.sign
-		cumulative_improvement_abs = abs(cumulative_improvement_signed)
-		print(f"\tCumulative Improvement: {cumulative_improvement_signed} (Threshold < {self.cumulative_delta})")
-		
-		stop_reason = []
-		if self.counter >= self.patience:
-			stop_reason.append(f"Patience ({self.counter}/{self.patience})")
-		if volatility >= self.volatility_threshold:
-			stop_reason.append(f"High volatility ({volatility:.2f}%)")
-		is_worsening = (self.mode == 'min' and slope > self.slope_threshold) or \
-						 (self.mode == 'max' and slope < self.slope_threshold)
-		if is_worsening:
-			stop_reason.append(f"Worsening slope ({slope:.5f})")
-		if pairwise_imp_avg < self.pairwise_imp_threshold and not close_to_best:
-			stop_reason.append(f"Low pairwise improvement ({pairwise_imp_avg:.5f}) & not close to best")
-		if cumulative_improvement_abs < self.cumulative_delta:
-			stop_reason.append(f"Low cumulative improvement ({cumulative_improvement_abs:.5f})")
-
-		should_trigger_stop = bool(stop_reason)
-		should_really_stop = False
-
-		if should_trigger_stop:
-			reason_str = ', '.join(stop_reason)
-			phase_constraint_met = (current_phase is None) or (current_phase >= self.min_phases_before_stopping)
-			if phase_constraint_met:
-				print(f"<!> EARLY STOPPING TRIGGERED:\n\t{reason_str}")
-				should_really_stop = True
-			else:
-				print(f"\tEarly stopping condition triggered ({reason_str}), but delaying stop (Phase {current_phase} < {self.min_phases_before_stopping})")
-		else:
-			print("\tNo stopping conditions met.")
-
-		if should_really_stop and self.restore_best_weights:
-			if self.best_weights is not None:
-				target_device = next(model.parameters()).device
-				print(f"Restoring model weights from best epoch {self.best_epoch + 1} (score: {self.best_score})")
-				model.load_state_dict({k: v.to(target_device) for k, v in self.best_weights.items()})
-			else:
-				print("Warning: restore_best_weights is True, but no best weights were saved.")
-		
-		return should_really_stop
-
-	def get_status(self) -> Dict[str, Any]:
-		status = {
-			"best_score": self.best_score,
-			"best_epoch": self.best_epoch + 1 if self.best_score is not None else 0,
-			f"patience_counter(out of {self.patience})": self.counter,
-			"value_history_len": len(self.value_history)
-		}
-		if len(self.value_history) >= self.window_size:
-			last_window = self.value_history[-self.window_size:]
-			status["volatility_window"] = self.compute_volatility(last_window)
-			status["slope_window"] = compute_slope(window=last_window)
-		else:
-			status["volatility_window"] = None
-			status["slope_window"] = None
-		return status
-
-	def get_best_score(self) -> Optional[float]:
-		return self.best_score
-
-	def get_best_epoch(self) -> int:
-		return self.best_epoch
-
 def should_transition_to_next_phase_complex(
 		current_phase: int,
 		losses: List[float],
@@ -5250,6 +6685,10 @@ def should_transition_to_next_phase_complex(
 		print(f"==>> No phase transition required: Stable progress or close to best.\n\tContinue with current phase: {current_phase}.")
 
 	return transition
+
+
+
+
 
 def handle_phase_transition_complex(
 		current_phase: int,
