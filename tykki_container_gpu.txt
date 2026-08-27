@@ -1,3 +1,7 @@
+###########################################################################
+# ROIHU-GPU [ONLY]
+###########################################################################
+
 Pipeline Steps:
 
 Phase 1: Disable Old Conda Setups in Your User Environment
@@ -8,6 +12,14 @@ $ vim ~/.bashrc
 Comment out or delete the line:
 
 # export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
+
+# # Architecture-aware Tykky container path
+# ARCH=$(uname -m)
+# if [ "$ARCH" = "aarch64" ]; then
+#     export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
+# elif [ "$ARCH" = "x86_64" ]; then
+#     export PATH="/projappl/project_2004072/CondaCSC_CPU/bin:$PATH"
+# fi
 
 Save and exit: Esc => :wq!
 
@@ -31,7 +43,7 @@ $ cd /projappl/project_2004072
 Recreate the Empty Directory for the New Installation:
 We need an empty directory for Tykky to install into.
 
-$ rm -rf CondaCSC packages.sh && ls -l
+$ rm -rf CondaCSC packages.sh environment.yml && ls -l
 $ mkdir -v CondaCSC && ls -l
 
 Phase 3: Create the New Tykky Environment (Named CondaCSC)
@@ -43,24 +55,25 @@ Prepare environment.yml and requirements.txt:
 Create environment.yml (e.g., in your home directory or /projappl/project_2004072/) with your desired Conda packages.
 
 $ vim environment.yml
-$ cat environment.yml
 
 name: CondaCSC_env
 channels:
-	- conda-forge
+  - conda-forge
 dependencies:
-	- python=3.12
-	- pip
-	- setuptools
-	- wheel
+  - python=3.12
+  - pip
+  - setuptools
+  - wheel
+  # Core runtime libs
+  - libstdcxx-ng>=14
+  - libgcc-ng>=14
+  - sqlite
+  - icu
+  - openssl
+  - zlib
 
-	# Core runtime libs
-	- libstdcxx-ng>=14
-	- libgcc-ng>=14
-	- sqlite
-	- icu
-	- openssl
-	- zlib
+# verify there are no tabs before re-running:
+$ cat -A environment.yml | grep '\^I'
 
 $ conda-containerize new --prefix CondaCSC environment.yml
 
@@ -114,16 +127,19 @@ pip cache purge
 echo "Upgrading pip and setuptools"
 pip install --upgrade pip setuptools wheel
 
-CLUSTER_NAME=$(echo $HOSTNAME | grep -oE '(mahti|puhti)' | head -1)
-
+CLUSTER_NAME=$(echo $HOSTNAME | grep -oE '(mahti|puhti|roihu)' | head -1)
 echo "Loading latest CUDA module for cluster: $CLUSTER_NAME"
 
-if [ "$CLUSTER_NAME" = "mahti" ]; then
-	module load gcc/10.4
-else
-	module load gcc/13.2
-fi
-module load cuda/12.6
+# if [ "$CLUSTER_NAME" = "mahti" ]; then
+# 	module load gcc/10.4
+# else
+# 	module load gcc/13.2
+# fi
+# module load cuda/12.6
+
+# Roihu:
+module load gcc/14
+module load cuda/12.9
 
 echo "--- Compiler Configuration ---"
 echo "NVCC Location: $(which nvcc)"
@@ -133,21 +149,44 @@ echo "CC Variable:   $CC"
 echo "CC Version:    $($CC --version | head -n 1)"
 echo "CXX Variable:  $CXX"
 echo "CXX Version:   $($CXX --version | head -n 1)"
+echo ""
+echo "Supported GPU architectures (nvcc):"
+nvcc --list-gpu-arch
+echo ""
+echo "Supported GPU codes (nvcc):"
+nvcc --list-gpu-code
 echo "------------------------------"
 
-##################################################################################################
 # install torch ALONE. If this fails, we want to know immediately.
 echo "Installing torch and torchvision and torchaudio..."
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 -v
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 -v
+
+# Roihu:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu129 -v
+
+python -c "
+import torch
+print('Torch version:', torch.__version__)
+print('CUDA available:', torch.cuda.is_available())
+print('CUDA version (torch):', torch.version.cuda)
+print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')
+"
+
 pip install einops packaging ninja psutil
 
 # install flash-attn ALONE. If this fails, we want to know immediately.
 echo "--- Compiling Flash Attention ---"
-export FLASH_ATTN_CUDA_ARCHS="80"
+# export FLASH_ATTN_CUDA_ARCHS="80"
+# export MAX_JOBS=1
+# export FLASH_ATTENTION_FORCE_BUILD=TRUE
+# export FLASH_ATTENTION_FORCE_CXX11_ABI=TRUE
+export FLASH_ATTN_CUDA_ARCHS="90"
 export MAX_JOBS=1
-export FLASH_ATTENTION_FORCE_BUILD=TRUE
-export FLASH_ATTENTION_FORCE_CXX11_ABI=TRUE
-pip install flash-attn --no-build-isolation --no-cache-dir -v
+echo "FLASH_ATTN_CUDA_ARCHS is set to: ${FLASH_ATTN_CUDA_ARCHS}"
+echo "MAX_JOBS is set to: ${MAX_JOBS}"
+# pip install flash-attn --no-build-isolation --no-cache-dir -v
+# drop the -v to avoid spamming the logs
+pip install flash-attn --no-build-isolation --no-cache-dir -v 2>&1 | tee /tmp/flash_attn_build.log
 
 echo "--- Verifying Flash Attention Installation ---"
 python -c "
@@ -167,7 +206,6 @@ except ImportError as e:
 		import traceback
 		traceback.print_exc()
 "
-##################################################################################################
 
 # install fasttext ALONE. If this fails, we want to know immediately.
 echo "--- Installing fasttext ---"

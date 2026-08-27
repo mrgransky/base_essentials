@@ -1,0 +1,304 @@
+###########################################################################
+# ROIHU-CPU [ONLY]
+###########################################################################
+
+Pipeline Steps:
+
+Phase 1: Disable Old Conda Setups in Your User Environment
+$ cd
+$ rm -rf ~/.cache
+$ vim ~/.bashrc
+
+Comment out or delete the line:
+
+# export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
+
+# # Architecture-aware Tykky container path
+# ARCH=$(uname -m)
+# if [ "$ARCH" = "aarch64" ]; then
+#     export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
+# elif [ "$ARCH" = "x86_64" ]; then
+#     export PATH="/projappl/project_2004072/CondaCSC_CPU/bin:$PATH"
+# fi
+
+Save and exit: Esc => :wq!
+
+Apply ~/.bashrc Changes and Verify:
+
+The most reliable way is to log out of Puhti and log back in.
+
+Alternatively, for the current session (less complete than a fresh login): source ~/.bashrc
+
+Verify:
+
+$ echo $PATH
+$ which python
+
+Phase 2: Delete the Old CondaCSC Directory Content
+
+$ module purge
+$ module load tykky
+$ cd /projappl/project_2004072
+
+Recreate the Empty Directory for the New Installation:
+We need an empty directory for Tykky to install into.
+
+$ rm -rf CondaCSC_cpu packages_cpu.sh environment_cpu.yml && ls -l
+$ mkdir -v CondaCSC_cpu && ls -l
+
+Phase 3: Create the New Tykky Environment (Named CondaCSC)
+
+This phase uses Tykky to build a fresh, clean environment.
+
+Prepare environment.yml and requirements.txt:
+
+Create environment.yml (e.g., in your home directory or /projappl/project_2004072/) with your desired Conda packages.
+
+$ vim environment_cpu.yml
+
+name: CondaCSC_env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - pip
+  - setuptools
+  - wheel
+  # Core runtime libs
+  - libstdcxx-ng>=14
+  - libgcc-ng>=14
+  - sqlite
+  - icu
+  - openssl
+  - zlib
+
+# verify there are no tabs before re-running:
+$ cat -A environment_cpu.yml | grep '\^I'
+
+$ conda-containerize new --prefix CondaCSC_cpu environment_cpu.yml
+
+# Phase 4: Set Up PATH for the New CondaCSC Environment
+$ cd
+$ vim ~/.bashrc
+
+# add the following line to the end of ~/.bashrc
+export PATH="/projappl/project_2004072/CondaCSC_cpu/bin:$PATH"
+
+Save and exit: Esc => :wq!
+Log out of Puhti or Mahti (cttl + d) and log back in (most reliable).
+
+Or source ~/.bashrc.
+
+Verify:
+$ echo $PATH
+$ which pip
+
+which python and pip should now point to locations inside /projappl/project_2004072/CondaCSC/bin/.
+
+Test the New Environment:
+$ python -VV
+$ python -c "import platform; print(platform.machine())"
+
+continue with package installation:
+$ module purge
+$ module load tykky
+$ cd /projappl/project_2004072
+
+$ vim packages_cpu.sh
+
+#####################################################################
+set -e
+echo "Checking Initial Environment"
+echo "Hostname: $HOSTNAME"
+echo "User: $USER"
+echo "Checking PATH and python/pip/conda"
+echo "PATH: $PATH"
+echo -n "python -> "; which python
+echo -n "pip -> "; which pip
+echo -n "conda -> "; which conda
+conda list --show-channel-urls
+
+echo "cleaning cache"
+pip cache info
+pip cache list
+pip cache dir
+pip cache purge
+
+echo "Upgrading pip and setuptools"
+pip install --upgrade pip setuptools wheel
+
+CLUSTER_NAME=$(echo $HOSTNAME | grep -oE '(mahti|puhti|roihu)' | head -1)
+echo "Loading latest CUDA module for cluster: $CLUSTER_NAME"
+
+# if [ "$CLUSTER_NAME" = "mahti" ]; then
+# 	module load gcc/10.4
+# else
+# 	module load gcc/13.2
+# fi
+# module load cuda/12.6
+
+# # Roihu:
+# module load gcc/14
+# module load cuda/12.9
+
+echo "--- Compiler Configuration ---"
+echo "NVCC Location: $(which nvcc)"
+echo "NVCC Version:  $(nvcc --version | grep release)"
+echo "LDD version: $(ldd --version)"
+echo "CC Variable:   $CC"
+echo "CC Version:    $($CC --version | head -n 1)"
+echo "CXX Variable:  $CXX"
+echo "CXX Version:   $($CXX --version | head -n 1)"
+# echo ""
+# echo "Supported GPU architectures (nvcc):"
+# nvcc --list-gpu-arch
+# echo ""
+# echo "Supported GPU codes (nvcc):"
+# nvcc --list-gpu-code
+echo "------------------------------"
+
+# install torch ALONE. If this fails, we want to know immediately.
+echo "Installing torch and torchvision and torchaudio..."
+# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126 -v
+
+# Roihu:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu -v
+
+python -c "
+import torch
+print('Torch version:', torch.__version__)
+print('CUDA available:', torch.cuda.is_available())
+print('CUDA version (torch):', torch.version.cuda)
+print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'N/A')
+"
+
+pip install einops packaging ninja psutil
+
+# No GPU available on Roihu-CPU:
+# # install flash-attn ALONE. If this fails, we want to know immediately.
+# echo "--- Compiling Flash Attention ---"
+# # export FLASH_ATTN_CUDA_ARCHS="80"
+# # export MAX_JOBS=1
+# # export FLASH_ATTENTION_FORCE_BUILD=TRUE
+# # export FLASH_ATTENTION_FORCE_CXX11_ABI=TRUE
+# export FLASH_ATTN_CUDA_ARCHS="90"
+# export MAX_JOBS=1
+# echo "FLASH_ATTN_CUDA_ARCHS is set to: ${FLASH_ATTN_CUDA_ARCHS}"
+# echo "MAX_JOBS is set to: ${MAX_JOBS}"
+# # pip install flash-attn --no-build-isolation --no-cache-dir -v
+# # drop the -v to avoid spamming the logs
+# pip install flash-attn --no-build-isolation --no-cache-dir -v 2>&1 | tee /tmp/flash_attn_build.log
+
+# echo "--- Verifying Flash Attention Installation ---"
+# python -c "
+# import sys
+# import os
+# import platform
+# print('Python version:', sys.version)
+# print('LD_LIBRARY_PATH:', os.environ.get('LD_LIBRARY_PATH', 'Not set'))
+# print('Platform:', platform.platform())
+# print(platform.libc_ver())
+# try:
+# 		import flash_attn
+# 		print('Flash Attention imported successfully!')
+# 		print('Flash Attention version:', flash_attn.__version__)
+# except ImportError as e:
+# 		print('Failed to import flash_attn:', e)
+# 		import traceback
+# 		traceback.print_exc()
+# "
+
+# install fasttext ALONE. If this fails, we want to know immediately.
+echo "--- Installing fasttext ---"
+pip install fasttext --no-binary :all:
+
+pip install \
+	mediapipe \
+	lingua-language-detector \
+	langdetect \
+	libvoikko 
+
+echo "Installing transformers-related packages..."
+pip install \
+	transformers \
+	bitsandbytes \
+	accelerate \
+	openai \
+	sentence-transformers \
+	keybert
+
+echo "Installing NLP packages..."
+pip install \
+	spacy \
+	stanza \
+	trankit \
+	nltk \
+	rake-nltk
+
+echo "Installing other packages..."
+pip install \
+	blis \
+	scikit-image \
+	scikit-multilearn \
+	kneed \
+	hdbscan \
+	PyDrive2 \
+	google-api-python-client \
+	optree \
+	ftfy \
+	tabulate \
+	netCDF4 \
+	h5netcdf \
+	python-swiftclient \
+	rasterio \
+	geopandas \
+	pipdeptree \
+	jupyterlab \
+	ipywidgets \
+	nbclassic \
+	fuzzywuzzy \
+	rapidfuzz \
+	plotly \
+	pyarrow \
+	pydantic \
+	pycocotools \
+	dill \
+	matplotlib \
+	seaborn \
+	requests \
+	selenium \
+	beautifulsoup4 \
+	lxml \
+	html5lib \
+	pyenchant \
+	pyspelling \
+	wordcloud \
+	tenacity \
+	natsort \
+	openpyxl \
+	csvkit \
+	fastcluster \
+	certifi \
+	sentencepiece
+
+echo "Checking installed packages"
+conda list --show-channel-urls
+pipdeptree --reverse --packages numpy
+pipdeptree --reverse --packages pandas
+pipdeptree --reverse --packages spacy
+pipdeptree --reverse --packages stanza
+pipdeptree --reverse --packages torch
+pipdeptree --reverse --packages transformers
+pipdeptree --reverse --packages flash-attn
+#####################################################################
+
+$ cat packages_cpu.sh
+$ conda-containerize update CondaCSC_cpu --post-install packages_cpu.sh
+
+in case of any problem in loading LD_LIBRARY_PATH:
+# In ~/.bashrc
+# Fix for ICU/sqlite in Singularity containers
+GENERIC_GCC_PATH=$(ls -d /appl/spack/v023/install-tree/gcc-8.5.0/gcc-14.2.0-*/lib64 2>/dev/null | head -n 1)
+if [ -n "$GENERIC_GCC_PATH" ]; then
+		export SINGULARITYENV_LD_LIBRARY_PATH="$GENERIC_GCC_PATH"
+fi

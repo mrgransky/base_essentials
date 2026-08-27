@@ -12,24 +12,24 @@
 #	- "flag" instead of "german flag"
 #	- "red cross" instead of "american red cross"
 # - "smoking" instead of "a group of youngsters smoking outdoors"
-
+#
 # - Bias toward label reuse:
 # 	If a specific phrase can be reduced to a more general equivalent **without losing factual correctness**, opt for general form.
 # 	If a term represents a standardized domain-specific concept 
 # 	(e.g., military designation, chemical classification, organization name),
 # 	it MUST be treated as a single atomic label and MUST NOT be reduced.
 # - Keywords MAY appear verbatim in the caption if they are the most precise and reusable label. Do NOT paraphrase just to avoid repetition.
-
-
+#
+#
 # # Too Specific which produces massive number of singleton labels
 # # self-contained and grammatically complete phrases
 # LLM_INSTRUCTION_TEMPLATE = """<s>[INST]
 # You function as a historical archivist whose expertise lies in the 20th century.
 # Given the caption below, extract no more than {k} highly prominent, factual, and distinct **KEYWORDS** that convey the primary actions, objects, or occurrences. 
 # - The standardized and parsable **Python LIST** must be the **VERY LAST THING** in your response without any explanatory text.
-
+#
 # {caption}
-
+#
 # **CRITICAL RULES**:
 # - Return **ONLY** a standarized, valid, and parsable **Python LIST** with **AT MOST {k} KEYWORDS** - fewer is **highly expected** if the caption is either short or lacks distinct concepts.
 # - Extracted **KEYWORDS** must be self-contained and grammatically complete phrases that actually appear in the caption:
@@ -46,7 +46,7 @@
 # - The standarized and parsable **Python LIST** must be the **VERY LAST THING** in your response.
 # [/INST]"""
 ##################################################################
-
+#
 
 def extract_per_k_metrics(eval_result: Dict) -> Dict:
 	"""

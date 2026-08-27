@@ -46,18 +46,19 @@ $ module load cray-python
 # info about OS:
 $ cat /etc/os-release
 
-# run interactive gpu [Puhti]:
-$ srun -J interactive_gpu_test --account=project_2014707 --partition=gputest --gres=gpu:v100:4 --time=0-00:15:00 --mem=64G --cpus-per-task=4 --pty /bin/bash -i
-
 # run interactive gpu [Mahti]:
-$ srun -J gpu_interactive_test --account=project_2009043 --partition=gputest --gres=gpu:a100:4 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
+$ srun -J gpu_interactive_test --account=project_2014707 --partition=gputest --gres=gpu:a100:4 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
+
+# run interactive gpu [Roihu]:
+$ srun -J gpu_interactive_test --account=project_2014707 --partition=gputest --gres=gpu:gh200:4 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
 
 # Puhti:
 $ srun -J interactive_gpu --account=project_2009043 --partition=gpu --gres=gpu:v100:4 --time=0-03:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
 # Mahti:
 $ srun -J interactive_gpu --account=project_2014707 --partition=gpusmall --gres=gpu:a100:1 --time=0-23:15:00 --mem=64G --cpus-per-task=20 --pty /bin/bash -i
 
-$ srun -J interactive_cpu --account=project_2004072 --partition=interactive --time=00-13:00:00 --mem=73G --ntasks=1 --cpus-per-task=8 --pty /bin/bash -i
+# cpu:
+$ srun -J interactive_cpu --account=project_2004072 --partition=interactive --time=00-13:00:00 --mem=62G --ntasks=1 --cpus-per-task=8 --pty /bin/bash -i
 
 # LUMI:
 $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --gres=gpu:mi250:1 --time=0-02:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
@@ -322,8 +323,9 @@ $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 #how to see which job I am running:
 $ watch squeue -u alijani # monitor every 2 sec
 $ squeue --me
-$ squeue --me -o "%.15i %.12P %.10t %.15D %.15R %.15Q %.25S"
-$ sprio -l -p gpu --sort=-y # check priority of jobs in the queue for gpu partition
+$ squeue -u $USER -o "%.10i %.12P %.15j %.3t %.10M %.5D %.7Q %.20S %R"
+$ sprio -l -p gpumedium --sort=-y # check priority of jobs in the queue for gpu partition
+
 #run interactive cpu/gpu: to debug and run something...
 	$ source interactive_cpu.sh
 # OR... 
@@ -635,4 +637,13 @@ $ vim file.jsonl # open the file
 
 # comment all in python, bash, yaml, etc.
 :%s/^/# /
+
+
+Commenting multiple lines:
+1. visually select the text rows (Shift + V in Vim and select the lines)
+2. :norm i#
+
+Uncommenting multiple lines:
+1. visually select the text rows (Shift + V in Vim and select the lines)
+2. :norm ^x
 #####################################################
