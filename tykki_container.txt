@@ -190,6 +190,7 @@ pip install \
 
 echo "Installing NLP packages..."
 pip install \
+	spacy \
 	stanza \
 	trankit \
 	nltk \
@@ -245,6 +246,8 @@ echo "Checking installed packages"
 conda list --show-channel-urls
 pipdeptree --reverse --packages numpy
 pipdeptree --reverse --packages pandas
+pipdeptree --reverse --packages spacy
+pipdeptree --reverse --packages stanza
 pipdeptree --reverse --packages torch
 pipdeptree --reverse --packages transformers
 pipdeptree --reverse --packages flash-attn

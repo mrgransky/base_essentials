@@ -47,6 +47,361 @@
 # [/INST]"""
 ##################################################################
 
+
+def extract_per_k_metrics(eval_result: Dict) -> Dict:
+	"""
+	Extract per-K mAP and Recall from the return dict of any evaluation function.
+	Works with zero_shot_multi_label, evaluate_best_model, probe, etc.
+	Returns:
+			{
+				"i2t": {"overall": {"mAP": {k: v}, "Recall": {k: v}},
+								"head":    {"mAP": {k: v}, "Recall": {k: v}},
+								"rare":    {"mAP": {k: v}, "Recall": {k: v}}},
+				"t2i": { ... same structure ... }
+			}
+	"""
+	out = {}
+	for direction, tier_key in [("i2t", "tiered_i2t"), ("t2i", "tiered_t2i")]:
+		tiered = eval_result.get(tier_key, {})
+		out[direction] = {}
+		for tier in ("overall", "head", "rare"):
+			tier_data = tiered.get(tier, {})
+			out[direction][tier] = {
+				"mAP":    {str(k): float(v) for k, v in tier_data.get("mAP",    {}).items()},
+				"Recall": {str(k): float(v) for k, v in tier_data.get("Recall", {}).items()},
+			}
+
+	return out
+
+def save_tiered_retrieval_metrics(
+	best_model_result: Dict,
+	# tiered_i2t: Dict,
+	# tiered_t2i: Dict,
+	strategy: str,
+	dataset_directory: str,
+	column: str,
+	verbose: bool = True,
+):
+	result_dir = os.path.join(dataset_directory, column)
+	os.makedirs(result_dir, exist_ok=True)
+
+	output_dir = os.path.join(dataset_directory, "outputs")
+	os.makedirs(output_dir, exist_ok=True)
+
+	per_k = extract_per_k_metrics({"tiered_i2t": tiered_i2t, "tiered_t2i": tiered_t2i})
+
+	retrieval_tiered_fpath = os.path.join(result_dir, f"retrieval_metrics_accumulated.json")
+	retrieval_accumulated = {}
+	if os.path.exists(retrieval_tiered_fpath):
+		if verbose:
+			print(f"Loading existing results from {retrieval_tiered_fpath}")
+		with open(retrieval_tiered_fpath) as f:
+			retrieval_accumulated = json.load(f)
+	
+	retrieval_accumulated[strategy] = per_k
+	
+	with open(retrieval_tiered_fpath, "w") as f:
+		json.dump(retrieval_accumulated, f, indent=2)
+	
+	performance_fpath = os.path.join(output_dir, f"performance.json")
+	performance_accumulated = {}
+	if os.path.exists(performance_fpath):
+		if verbose:
+			print(f"Loading existing results from {performance_fpath}")
+		with open(performance_fpath) as f:
+			performance_accumulated = json.load(f)
+	
+	# Ensure column key exists
+	if column not in performance_accumulated:
+		performance_accumulated[column] = {}
+	
+	performance_accumulated[column][strategy] = per_k
+	
+	with open(performance_fpath, "w") as f:
+		json.dump(performance_accumulated, f, indent=2)
+
+	if verbose:
+		print("="*120)
+		print(strategy.upper())
+		print(json.dumps(per_k, indent=2, ensure_ascii=False))
+
+		print(f"\nRetrieval Tiered Metrics:")
+		collected_retrieval_methods = list(retrieval_accumulated.keys())
+		n_methods = len(collected_retrieval_methods)
+		print(f"'{strategy}' strategy results appended to {retrieval_tiered_fpath}")
+		print(f">> {n_methods} collected method(s): {collected_retrieval_methods}")
+
+		print(f"\nPerformance Metrics:")
+		collected_columns = list(performance_accumulated.keys())
+		n_columns = len(collected_columns)
+		print(f"'{column}' column results appended to {performance_fpath}")
+		print(f">> {n_columns} collected column(s): {collected_columns}")
+		print("="*120)
+
+
+
+
+def compute_retrieval_metrics_from_similarity_old(
+	similarity_matrix: torch.Tensor,
+	query_labels: torch.Tensor,
+	candidate_labels: torch.Tensor,
+	topK_values: List[int],
+	mode: str = "Image-to-Text",
+	class_counts: Optional[torch.Tensor] = None,
+	max_k: Optional[int] = None,
+	cache_dir: str = None,
+	cache_key: str = None,
+	is_training: bool = False,
+	chunk_size: int = 1000,
+	verbose: bool = False,
+) -> Dict:
+	"""
+	Compute retrieval metrics (mP, mAP, Recall) with memory optimization and proper multi-label support.
+	
+	Args:
+			similarity_matrix: [num_queries, num_candidates]
+			query_labels: [num_queries] for single-label or [num_queries, num_classes] for multi-label
+			candidate_labels: [num_candidates] for single-label or [num_candidates, num_classes] for multi-label  
+			topK_values: List of K values for evaluation
+			mode: "Image-to-Text" or "Text-to-Image"
+			class_counts: Number of samples per class (for single-label recall)
+			max_k: Maximum K to consider
+			cache_dir: Cache directory
+			cache_key: Cache identifier
+			is_training: Skip caching if True
+			verbose: Print progress
+			chunk_size: Chunk size for memory optimization
+			
+	Returns:
+			Dictionary with mP, mAP, and Recall metrics
+	"""
+	
+	num_queries, num_candidates = similarity_matrix.shape
+	device = similarity_matrix.device
+	
+	# Validate inputs
+	if query_labels.dim() not in [1, 2] or candidate_labels.dim() not in [1, 2]:
+		raise ValueError("Labels must be 1D (single-label) or 2D (multi-label)")
+	
+	# Determine if multi-label based on labels dimensionality
+	is_multi_label = (
+		len(candidate_labels.shape) == 2 if mode == "Text-to-Image" 
+		else len(query_labels.shape) == 2
+	)
+
+	# Sanity check — relevant items per query should reflect tier size 
+	if verbose and is_multi_label:
+		if mode == "Image-to-Text":
+			# query_labels: [N_images, N_tier] — relevant = true classes per image
+			relevant_per_query = (query_labels > 0).sum(dim=1).float()
+			n_candidates = similarity_matrix.shape[1]
+			print(f"\n[I2T Sanity] Relevant items per query (out of {n_candidates} candidates):")
+			print(f"  ├─ (min, max): ({relevant_per_query.min()}, {relevant_per_query.max()})")
+			print(f"  ├─ mean: {relevant_per_query.mean():.2f} std: {relevant_per_query.std():.2f}")
+			print(f"  ├─ zero-relevant queries: {( relevant_per_query == 0).sum().item()}")
+
+			if relevant_per_query.max().item() > n_candidates:
+				print(f"  └─ [WARNING] max relevant ({relevant_per_query.max():.0f}) "
+						f"> num candidates ({n_candidates}) — "
+						f"full label vector may be leaking into tier computation")
+			else:
+				print(f"  └─ [OK] max relevant ≤ num candidates — tier labels correctly restricted")
+		else:  # Text-to-Image
+			# candidate_labels: [N_images, N_tier] — relevant = images per class
+			relevant_per_query = candidate_labels.sum(dim=0).float()  # [N_tier]
+			n_queries = similarity_matrix.shape[0]
+			print(f"\n[T2I Sanity] Relevant items per query class (out of {similarity_matrix.shape[1]} images):")
+			print(f"  ├─ (min, max): ({relevant_per_query.min()}, {relevant_per_query.max()})")
+			print(f"  ├─ mean: {relevant_per_query.mean():.2f} std: {relevant_per_query.std():.2f}")
+			print(f"  ├─ zero-relevant queries: {( relevant_per_query == 0).sum().item()}")
+			# print(
+			# 	f"    min={relevant_per_query.min():.0f} "
+			# 	f"max={relevant_per_query.max():.0f} "
+			# 	f"mean={relevant_per_query.mean():.2f} "
+			# 	f"zero-relevant classes={( relevant_per_query == 0).sum().item()}"
+			# )
+			if (relevant_per_query == 0).any():
+				zero_count = (relevant_per_query == 0).sum().item()
+				print(
+					f"  └─ [WARNING] {zero_count} classes have zero relevant images "
+					f"— likely inactive classes (freq=0 in validation). "
+					f"These contribute 0 to mAP and are expected in full evaluation. "
+					f"Tiered evaluation will filter these via active_mask."
+				)
+			else:
+				print(f"  └─ [OK] All query classes have ≥1 relevant image")
+
+	# Check cache
+	cache_file = None
+	if cache_dir and cache_key and not is_training:
+		cache_file = os.path.join(cache_dir, f"{cache_key}_retrieval_metrics.json")
+		if os.path.exists(cache_file):
+			try:
+				if verbose:
+					print(f"Loading cached metrics from {cache_file}")
+				with open(cache_file, 'r') as f:
+					return json.load(f)
+			except Exception as e:
+				if verbose:
+					print(f"Cache loading failed: {e}. Computing metrics.")
+	
+	# Validate and filter K values
+	valid_K_values = [K for K in topK_values if K <= (max_k or num_candidates)]
+	if not valid_K_values:
+		raise ValueError("No valid K values provided")
+	
+	# Get top-K indices for all queries (memory efficient)
+	# all_sorted_indices = torch.argsort(similarity_matrix, dim=1, descending=True)
+	# Use chunked version:
+	chunk_size = 256
+	all_sorted_indices = torch.cat([
+		torch.argsort(similarity_matrix[i:i+chunk_size], dim=1, descending=True)
+		for i in range(0, similarity_matrix.shape[0], chunk_size)
+	], dim=0)	
+
+	metrics = {"mP": {}, "mAP": {}, "Recall": {}}
+	for K in valid_K_values:
+		top_k_indices = all_sorted_indices[:, :K]
+		
+		# Compute correctness mask based on dataset type
+		if is_multi_label:
+			correct_mask = compute_multilabel_correctness(
+				top_k_indices, 
+				query_labels, 
+				candidate_labels, 
+				mode, 
+				K, 
+				chunk_size,
+			)
+		else:
+			correct_mask = compute_singlelabel_correctness(
+				top_k_indices, 
+				query_labels, 
+				candidate_labels, 
+				K,
+			)
+		
+		# Compute metrics
+		metrics["mP"][str(K)] = correct_mask.float().mean().item()
+
+		# Compute Recall
+		if mode == "Image-to-Text":
+			metrics["Recall"][str(K)] = correct_mask.any(dim=1).float().mean().item()
+		else:  # Text-to-Image
+			if is_multi_label:
+				# candidate_labels: [N_images, N_tier] — already sliced to tier classes
+				# num_queries == N_tier (one query per class)
+				relevant_counts = candidate_labels.sum(dim=0).float()        # [num_queries]
+				retrieved_counts = correct_mask.float().sum(dim=1)           # [num_queries]
+				valid = relevant_counts > 0
+				recall_per_query = torch.where(
+					valid,
+					retrieved_counts / relevant_counts.clamp(min=1),
+					torch.zeros_like(retrieved_counts),
+				)
+				metrics["Recall"][str(K)] = recall_per_query[valid].mean().item() if valid.any() else 0.0
+			else:
+				if class_counts is None:
+					raise ValueError("class_counts required for single-label text-to-image")
+				relevant_counts = class_counts[query_labels]
+				recalled = correct_mask.sum(dim=1).float()
+				metrics["Recall"][str(K)] = (recalled / relevant_counts.clamp(min=1)).mean().item()
+
+		# Compute mAP (vectorized)
+		positions = torch.arange(1, K + 1, device=device).float().unsqueeze(0)
+		cumulative_correct = correct_mask.float().cumsum(dim=1)
+		precisions = cumulative_correct / positions
+		
+		# AP = sum(precision * relevance) / num_relevant
+		ap_scores = (precisions * correct_mask.float()).sum(dim=1) / correct_mask.sum(dim=1).clamp(min=1)
+		metrics["mAP"][str(K)] = ap_scores.nanmean().item()
+	
+	return metrics
+
+
+def _semantic_jaccard_cached(
+	sets_a: List[Set[str]], 
+	sets_b: List[Set[str]], 
+	emb_cache: Dict[str, np.ndarray],
+	threshold: float = 0.7,
+	verbose: bool = False
+) -> float:
+	"""
+	Computes a thresholded bidirectional semantic overlap score,
+	NOT a formal Jaccard index. 
+	Matching is many-to-many: a single label may satisfy multiple 
+	labels on the opposite side, so the resulting "intersection" 
+	can exceed min(|A|, |B|) in edge cases with 
+	duplicate/near-duplicate concepts. 
+	Use for descriptive comparison only, 
+	not as a bounded similarity metric.
+		
+	Args:
+			sets_a: List of label sets (one per sample) for source A
+			sets_b: List of label sets (one per sample) for source B  
+			emb_cache: Pre-computed embeddings {label: vector}
+			threshold: Cosine similarity threshold for equivalence (0.7 = fairly similar)
+			verbose: Print debugging info
+	
+	Returns:
+			Mean semantic Jaccard across all samples
+	"""
+	if len(sets_a) != len(sets_b):
+		raise ValueError(f"Input length mismatch: {len(sets_a)} vs {len(sets_b)}")
+	
+	jaccard_scores = []
+	skipped = 0
+	
+	for idx, (a, b) in enumerate(zip(sets_a, sets_b)):
+		# Skip samples where both are empty
+		if not a and not b:
+			skipped += 1
+			continue
+		
+		# Skip if no embeddings available
+		a_labels = [label for label in a if label in emb_cache]
+		b_labels = [label for label in b if label in emb_cache]
+		
+		if not a_labels or not b_labels:
+			skipped += 1
+			continue
+		
+		# Get embeddings for this sample's labels
+		a_embs = np.array([emb_cache[label] for label in a_labels])
+		b_embs = np.array([emb_cache[label] for label in b_labels])
+		
+		# Compute pairwise cosine similarities (vectorized)
+		# Shape: (len(a_labels), len(b_labels))
+		similarities = 1 - np.array(
+			[
+				[scipy.spatial.distance.cosine(a_emb, b_emb) for b_emb in b_embs]
+				for a_emb in a_embs
+			]
+		)
+		
+		# For each label in A, count as "matched" if best match in B >= threshold
+		matches_a_to_b = np.sum(np.max(similarities, axis=1) >= threshold)
+		
+		# For each label in B, count as "matched" if best match in A >= threshold
+		matches_b_to_a = np.sum(np.max(similarities, axis=0) >= threshold)
+		
+		# Semantic intersection: average of bidirectional matches
+		semantic_intersection = (matches_a_to_b + matches_b_to_a) / 2.0
+		
+		# Semantic union: total labels minus intersection (to avoid double-counting)
+		semantic_union = len(a_labels) + len(b_labels) - semantic_intersection
+		
+		# Compute Jaccard for this sample
+		if semantic_union > 0:
+			jaccard = semantic_intersection / semantic_union
+			jaccard_scores.append(jaccard)
+	
+	if verbose:
+		print(f"    Computed semantic Jaccard for {len(jaccard_scores)} samples (skipped {skipped})")
+	
+	return float(np.mean(jaccard_scores)) if jaccard_scores else 0.0
+
+
 def cluster_original(
 	labels: List[List[str]],
 	model_id: str,
