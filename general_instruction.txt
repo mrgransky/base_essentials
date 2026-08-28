@@ -11,6 +11,11 @@ $ ssh alijanif@lumi.csc.fi
 $ ssh alijanif@roihu-cpu.csc.fi -i ~/.ssh/puhti_ssh_key -i ~/.ssh/cert.pub
 $ ssh alijanif@roihu-gpu.csc.fi -i ~/.ssh/puhti_ssh_key -i ~/.ssh/cert.pub
 
+# or after adding config:
+$ csc_cert -u alijanif ~/.ssh/puhti_ssh_key.pub
+$ ssh roihu-gpu
+$ ssh roihu-cpu
+
 # to access your Django app from VM
 $ ssh -L 8000:localhost:8000 ubuntu@128.214.254.157
 
@@ -147,6 +152,7 @@ $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --g
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multimodal_canonical_labels/inference $HOME/datasets/trash/results/h4
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/*.png $HOME/datasets/trash/results/h4
+	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/users/alijanif/WS_Farid/ImACCESS/misc/canonical_labels.json $HOME/datasets/trash/logs -vv
 
 	# Mahti:
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/*_h4.txt $HOME/datasets/trash/logs -vv
