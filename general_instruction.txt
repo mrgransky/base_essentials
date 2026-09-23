@@ -51,16 +51,8 @@ $ module load cray-python
 # info about OS:
 $ cat /etc/os-release
 
-# run interactive gpu [Mahti]:
-$ srun -J gpu_interactive_test --account=project_2014707 --partition=gputest --gres=gpu:a100:4 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
-
 # run interactive gpu [Roihu]:
 $ srun -J gpu_interactive_test --account=project_2014707 --partition=gputest --gres=gpu:gh200:4 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
-
-# Puhti:
-$ srun -J interactive_gpu --account=project_2009043 --partition=gpu --gres=gpu:v100:4 --time=0-03:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
-# Mahti:
-$ srun -J interactive_gpu --account=project_2014707 --partition=gpusmall --gres=gpu:a100:1 --time=0-23:15:00 --mem=64G --cpus-per-task=20 --pty /bin/bash -i
 
 # cpu:
 $ srun -J interactive_cpu --account=project_2004072 --partition=interactive --time=00-13:00:00 --mem=62G --ntasks=1 --cpus-per-task=8 --pty /bin/bash -i
@@ -100,8 +92,7 @@ $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --g
 	$ rsync -azhm --stats --progress $HOME/datasets/MS_COCO alijanif@puhti.csc.fi:/scratch/project_2004072/IMG_Captioning & > /dev/null # no prininting in terminal
 	$ rsync -azhm --stats --progress $HOME/datasets/WW_DATASETs/WWII_1939-09-01_1945-09-02/hits alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02
 
-	# Mahti:
-	$ rsync -azhm --stats --progress $HOME/datasets/WW_DATASETs/WWII_1939-09-01_1945-09-02/hits alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02
+	$ rsync -azhm --stats --progress $HOME/datasets/WW_DATASETs/WWII_1939-09-01_1945-09-02/hits roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02
 
 	# local laptop => Puhti: [must be executed in local laptop terminal]:
 	$ rsync -avzhm --stats --progress $HOME/datasets/Nationalbiblioteket/dataframes_x732/*.json alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732 -vv
@@ -148,7 +139,11 @@ $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --g
 	# To local laptop (must be executed locally):
 	# Puhti:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/mm*.out $HOME/datasets/trash/logs -vv
-	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs $HOME/datasets/trash/results/h4
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/*json $HOME/datasets/trash/results/h4/output_roihu
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/viz $HOME/datasets/trash/results/h4/output_roihu
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/*unique_labels*.csv $HOME/datasets/trash/results/h4/output_roihu
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/*/seed_*/viz $HOME/datasets/trash/results/h4/output_roihu
+
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multimodal_canonical_labels/inference $HOME/datasets/trash/results/h4
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multi_label/*.png $HOME/datasets/trash/results/h4
@@ -190,7 +185,6 @@ $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --g
 
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/H*/single_label/*.png $HOME/datasets/trash/results/h4/ -vv
 	$ rsync -avzh --stats --progress alijanif@mahti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/H*/single_label/*.png $HOME/datasets/trash/results/h4/ -vv
-
 
 	$ rsync -avzh --stats --progress -e "ssh -i $HOME/.ssh/narvi_key" alijani@narvi.tut.fi:/lustre/sgn-data/ImACCESS/WW_DATASETs/H*/results/*.png $HOME/datasets/trash/results/ -vv
 	$ rsync -avzh --stats --progress ubuntu@128.214.254.157:WS_Farid/ImACCESS/clip/*/results/*.png $HOME/datasets/trash/results/ -vv
@@ -328,8 +322,7 @@ $ export PATH="/projappl/project_2004072/CondaCSC/bin:$PATH"
 
 #how to see which job I am running:
 $ watch squeue -u alijani # monitor every 2 sec
-$ squeue --me
-$ squeue -u $USER -o "%.10i %.12P %.15j %.3t %.10M %.5D %.7Q %.20S %R"
+$ squeue -u $USER -o "%.15i %.12P %.25j %.3t %.10M %.5D %.7Q %.20S %R"
 $ sprio -l -p gpumedium --sort=-y # check priority of jobs in the queue for gpu partition
 
 #run interactive cpu/gpu: to debug and run something...
@@ -350,9 +343,8 @@ $ sprio -l -p gpumedium --sort=-y # check priority of jobs in the queue for gpu 
 	$ scancel -u alijani
 
 # sinfo valid type specs, https://slurm.schedmd.com/sinfo.html
-
 $ sinfo -o "%15P %3c %10m %21l %60G %24e %5D %30f %30N"
-$ squeue -p gpu -o "%.12i %.8u %.2t %.9P %.5D %.10R %.10Q %.25S" --sort=-Q
+$ squeue -p gpumedium -o "%.12i %.8u %.2t %.9P %.5D %.10R %.10Q %.25S" --sort=-Q
 $ sprio -j <job_id>
 $ sudo apt update -y && sudo apt full-upgrade -y
 
@@ -372,7 +364,6 @@ $ sinfo -o "%N %f" | grep gpu
 
 $ sacctmgr list user $USER withassoc
 
-$ squeue -u alijanif --long
 
 # Analyzing currently running jobs with sstat:
 $ sstat --jobs=your_job-id
@@ -432,6 +423,14 @@ $ ls -l /path_to_dir | wc -l
 $ df -h . # disk usage
 $ ls -U | grep -c '\.jpg$'
 $ du -sh DARIAH-FI/* | sort -rh
+# example:
+$ [alijanif@roihu-gpu-login2 ~]$ ls -l /scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02/images/ | wc -l
+26378
+[alijanif@roihu-gpu-login2 ~]$ ls -l /scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02/images/*.jpg | wc -l
+-bash: /usr/bin/ls: Argument list too long
+0
+[alijanif@roihu-gpu-login2 ~]$ find /scratch/project_2004072/ImACCESS/WW_DATASETs/WWII_1939-09-01_1945-09-02/images/ -maxdepth 1 -type f -name '*.jpg' | wc -l
+26377
 
 # avoid __pycache__ # DON NOT DELETE THIS LINE!!!!
 sys.dont_write_bytecode = True 
@@ -559,6 +558,12 @@ $ grep "term1|term2|term3" large_log_file.txt
 # Search for a Term and Display Context
 $ grep -A 50 "Caption: 'No caption available.'" /scratch/project_2004072/ImACCESS/trash/logs/H4_mlm.out
 
+# -A N → N lines after each match
+
+# -B N → N lines before each match
+
+# -C N → N lines before and after each match (symmetric)
+
 ##################################################################################################
 # nohup:
 $ nohup python -u RecSys_usr_token.py --inputDF /scratch/project_2004072/Nationalbiblioteket/dataframes/nikeY.docworks.lib.helsinki.fi_access_log.07_02_2021.log.dump --qphrase 'åbo akademi' --lmMethod 'stanza' > nikeY_stanza.out &
@@ -644,6 +649,8 @@ $ vim file.jsonl # open the file
 # comment all in python, bash, yaml, etc.
 :%s/^/# /
 
+# search for all uppercases:
+/'\s*[A-Z][A-Z0-9 ,.-]*\s*'
 
 Commenting multiple lines:
 1. visually select the text rows (Shift + V in Vim and select the lines)

@@ -48,6 +48,597 @@
 ##################################################################
 #
 
+
+# PROMPT_TEMPLATE = """Extract no more than {k} keywords.
+# Keywords must be concrete, semantically atomic, visually grounded and reusable across archives.
+# Return your response as a Python list of double-quoted strings containing keywords derived strictly from the caption without any reasoning, thinking, or explanation.
+# Opt for fewer keywords if the caption is short or lacks sufficient information.
+# Returning fewer keywords — or an empty list [] — is always better than returning one excluded term.
+
+# EXCLUDE:
+#   - Generic war terms ('World War I', 'post war era', 'Post-war', 'aftermath of World War II').
+#   - Quantities, counts, measurements, or numeric expressions (1 1/2 ton truck, 1 kilovolt, 7.3mm, 3 Dodge trucks).
+#   - Equipment identifiers, serial numbers, brands, or models.
+#   - Dates, times, years, decades, or any temporal references.
+#   - Names of locations, neighborhoods, places, buildings, or structures (Plaza de Santiago, St. Louis Cathedral).
+#   - Individual people's names or honorifics (A. A. Robinson, A. Philip Randolph, Barbara Briggs, Allan M. Hardy, Josef Dietrich, Mrs. Howard Russell). 
+#   - Family relationship terms (mother, father, son, uncle).
+#   - Generic human category nouns (man, men, woman, person, people, children).
+#   - Geographical names such as continents, countries, states, provinces, cities, towns, islands, regions, roads, or landmarks.
+#   - Ordinal numeral keywords (fourth, 1st, 115th).
+#   - Roman numerals (I, II, IV, VIII).
+#   - Nationalities, ethnicities, or religions.
+#   - Misspelled keywords or non-standard spellings.
+#   - Acronyms, phrasal verbs, possessive constructions, or descriptive clauses.
+#   - Underscores, snake_case, camelCase, kebab-case, slashes, or punctuation to join words.
+
+# Color handling:
+#   - Remove color only if it is purely descriptive (white truck, blue sky).
+#   - Preserve color terms when they are part of a standardized or semantic label (Red Cross, Blue Cross gas shell, Green Berets).
+
+# Caption: {caption}"""
+
+
+	# Structural syntax that should NOT count as semantic/lexical evidence:
+	ROMAN_NUMERALS = {
+		"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"
+	}
+
+	CASE_CONNECTORS = {
+		"a", "an", "and", "as", "at", "by", "for", "from", "in", 
+		"of", "on", "or", "the", "to", "with", "his", "her", "its", 
+		"de", "von", "van"
+	}
+
+
+
+	@lru_cache(maxsize=100_000)
+	def _is_dict_word(token: str) -> bool:
+			"""Checks WordNet, testing both the raw token and common compound variations."""
+			clean_t = re.sub(r"[^A-Za-z'-]", "", token).lower()
+			if not clean_t:
+					return False
+			try:
+					# Direct lookup (e.g. 'soldiers', 'engine')
+					if nltk.corpus.wordnet.synsets(clean_t):
+							return True
+					# Closed compound lookup (e.g. 'northwind' -> 'north_wind')
+					# Check split possibilities for compounds
+					for i in range(3, len(clean_t) - 2):
+							compound_form = f"{clean_t[:i]}_{clean_t[i:]}"
+							if nltk.corpus.wordnet.synsets(compound_form):
+									return True
+					return False
+			except LookupError:
+					return False
+
+	def _has_weak_orthographic_evidence(token: str) -> bool:
+			"""
+			Allows 4-consonant clusters across compound boundaries (northwind -> rthw),
+			but rejects 5+ consonant scanner soup (e.g. BCDFGH, XZPTKQ).
+			"""
+			clean_t = re.sub(r"[^A-Za-z]", "", token).lower()
+			if len(clean_t) < 6:
+					return False
+
+			vowels = sum(1 for ch in clean_t if ch in "aeiouy")
+			if vowels == 0:
+					return False
+
+			vowel_ratio = vowels / len(clean_t)
+			if not (0.15 <= vowel_ratio <= 0.75):
+					return False
+
+			# Allow up to 4 consonants (compound words), reject 5+ consecutive consonants
+			if re.search(r"[bcdfghjklmnpqrstvwxz]{5,}", clean_t):
+					return False
+
+			return True
+
+
+	def should_skip_by_case_adv(
+			lemma: str,
+			uppercase_bound_thresh: float = 75.0,
+			verbose: bool = False,
+	) -> bool:
+			"""
+			Multi-tier evidence-based case filter for noisy historical/archival metadata.
+			
+			Evidence Strength Hierarchy:
+				1. Explicit Acronym Allowlist              -> Very High
+				2. WordNet Lexical Match                   -> High
+				3. Roman Numerals / Connectors             -> Neutral (Structural Syntax)
+				4. Multi-word Phrase Evidence Ratio        -> Medium-High
+				5. Orthographic Heuristic (Length + Vowel) -> Low-Medium (Weak fallback)
+				6. Raw Capitalization Ratio                -> Scrutiny Trigger only
+			"""
+			letters = [ch for ch in lemma if ch.isalpha()]
+			if not letters:
+					return False
+
+			upper_count = sum(1 for ch in letters if ch.isupper())
+			upper_pct = (upper_count / len(letters)) * 100.0
+			words = lemma.split()
+			normalized = lemma.strip()
+
+			# ── TIER 1: Explicit Acronym Allowlist (Very High Evidence) ──
+			# Fast path: deterministic whitelist check bypassing all heuristic scrutiny.
+			acronym_key = re.sub(r"[^A-Za-z]", "", normalized).upper()
+			if acronym_key in ALLOWED_ACRONYMS_NORMALIZED:
+					if verbose:
+							print(f"\t\t[CASE] {lemma!r}: allowed acronym ({acronym_key}), keeping")
+					return False
+
+			# ── TIER 2: Scrutiny Trigger ──
+			# Explicitly distinguish between total ALL-CAPS and partial high-uppercase
+			is_all_caps = (upper_pct == 100.0)
+			is_high_uppercase = (upper_pct >= uppercase_bound_thresh)
+
+			if not is_high_uppercase:
+					return False  # Normal casing; no case-based noise suspected
+
+			# ── TIER 3: Single-Word Scrutiny ──
+			if len(words) == 1:
+					token = words[0]
+					clean_token = re.sub(r"[^A-Za-z'-]", "", token)
+
+					# 3a. Single-letter uppercase noise ('X', 'Q')
+					if len(clean_token) <= 1:
+							if verbose:
+									print(f"\t\t[CASE] {lemma!r}: single-letter uppercase noise, skipping")
+							return True
+
+					# 3b. WordNet lexical evidence (SUBMARINE, SOLDIERS, HOTEL, SEAPLANE)
+					if _is_dict_word(clean_token):
+							if verbose:
+									print(f"\t\t[CASE] {lemma!r}: lexical word ({'ALL-CAPS' if is_all_caps else 'high-caps'}), keeping")
+							return False
+
+					# 3c. Weak orthographic fallback for names/compounds (FLAKSTOP, AMAKASSIN, GUSTROW)
+					if _has_weak_orthographic_evidence(clean_token):
+							if verbose:
+									print(f"\t\t[CASE] {lemma!r}: weak orthographic evidence, keeping")
+							return False
+
+					# 3d. Otherwise: short unlisted uppercase code (XYZ, CMD, FLT, BNDL)
+					if verbose:
+							print(f"\t\t[CASE] {lemma!r}: short unlisted code, skipping")
+					return True
+
+
+			# ── TIER 4: Multi-Word Scrutiny ──
+			legitimate_count = 0
+			meaningful_count = 0
+			has_strong_word = False
+			all_meaningful_have_vowels = True
+			for w in words:
+					w_clean = re.sub(r"[^A-Za-z]", "", w)
+					if not w_clean:
+							continue
+					w_lower = w_clean.lower()
+					w_upper = w_clean.upper()
+					if w_upper in ROMAN_NUMERALS or w_lower in CASE_CONNECTORS:
+							continue
+					meaningful_count += 1
+					
+					# Track whether non-structural words are pronounceable (have vowels)
+					if not any(ch in "aeiouyAEIOUY" for ch in w_clean):
+							all_meaningful_have_vowels = False
+					is_strong = (w_upper in ALLOWED_ACRONYMS_NORMALIZED or _is_dict_word(w_clean))
+					if is_strong:
+							has_strong_word = True
+							legitimate_count += 1
+					elif _has_weak_orthographic_evidence(w_clean):
+							legitimate_count += 1
+			if meaningful_count == 0:
+					return False
+			if meaningful_count <= 2:
+					# Strict 2/2 unless 1 word is strongly verified AND the other is pronounceable (has vowels)
+					# Allows: "LIL COOKIE", "LEAPING LEMA"
+					# Blocks: "XYZ ENGINE", "QWR SOLDIER"
+					if legitimate_count == meaningful_count:
+							is_phrase_legit = True
+					elif legitimate_count >= 1 and has_strong_word and all_meaningful_have_vowels:
+							is_phrase_legit = True
+					else:
+							is_phrase_legit = False
+			else:
+					legitimate_ratio = legitimate_count / meaningful_count
+					is_phrase_legit = (legitimate_ratio >= 0.5)
+			if not is_phrase_legit:
+					if verbose:
+							print(f"\t\t[CASE] {lemma!r}: failed phrase legitimacy ({legitimate_count}/{meaningful_count} words), skipping")
+					return True
+			return False
+
+
+def get_llm_based_labels_old(
+	model_id: str,
+	device: str,
+	batch_size: int,
+	max_generated_tks: int,
+	max_kws: int,
+	csv_file: str,
+	num_workers: int,
+	do_dedup: bool = True,
+	max_retries: int = 2,
+	quantization_bits: Optional[int]=None,
+	verbose: bool = False,
+) -> List[Optional[List[str]]]:
+
+	output_csv = csv_file.replace(".csv", "_llm_keywords.csv")
+
+	try:
+		df = pd.read_csv(
+			filepath_or_buffer=output_csv,
+			on_bad_lines='skip',
+			dtype=dtypes,
+			low_memory=False,
+			usecols = ['llm_keywords'],
+		)
+		return df['llm_keywords'].tolist()
+	except Exception as e:
+		print(f"{e} Generating from scratch...")
+	
+	# num_workers = min(os.cpu_count(), num_workers)
+	if verbose:
+		print(f"[INIT] Starting OPTIMIZED batch LLM processing with {num_workers} workers")
+
+	st_t = time.time()
+
+	# ========== Load data ==========
+	if verbose:
+		print(f"[PREP] Loading data (col: enriched_document_description) from {csv_file}...")
+	wanted_cols = {
+		'doc_url',
+		'title',
+		'description',
+		'keywords', # SMU dataset
+		'enriched_document_description',
+	}
+
+	try:
+		df = pd.read_csv(
+			filepath_or_buffer=csv_file,
+			on_bad_lines='skip',
+			dtype=dtypes,
+			low_memory=False,
+			usecols = lambda c: c in wanted_cols, # automatically skips missing cols
+		)
+	except Exception as e:
+		raise ValueError(f"Error loading CSV file: {e}")
+	
+	if verbose:
+		print(f"[LOADED] {type(df)} {df.shape} {list(df.columns)}")
+		print(df.head())
+
+	# regenerate enriched_document_description
+	df = get_enriched_description(
+		df=df,
+		eng_confidence_th=1e-2,
+		verbose=verbose
+	)
+	
+	if verbose:
+		print(f"[READY] {type(df)} {df.shape} {list(df.columns)} ({time.time() - st_t:.2f}s)")
+
+	descriptions = df['enriched_document_description'].tolist()
+	inputs = descriptions
+	if len(inputs) == 0:
+		return None
+
+	# Load tokenizer and model
+	tokenizer, model = _load_llm_(
+		model_id=model_id,
+		quantization_bits=quantization_bits,
+		verbose=verbose,
+	)
+	if verbose:
+		valid_count = sum(
+			1 for x in inputs
+			if x is not None and str(x).strip() not in ("", "nan", "None")
+		)
+		null_count = len(inputs) - valid_count
+		print(f"Input stats: {type(inputs)} {len(inputs)} total, {valid_count} valid, {null_count} null")
+	
+	# NULL-SAFE DEDUPLICATION
+	if do_dedup:
+		unique_map: Dict[str, int] = {}
+		unique_inputs: List[Optional[str]] = []
+		original_to_unique_idx: List[int] = []
+		for s in inputs:
+			if s is None or str(s).strip() in ("", "nan", "None"):
+				key = "__NULL__"
+			else:
+				key = str(s).strip()
+			if key in unique_map:
+				original_to_unique_idx.append(unique_map[key])
+			else:
+				idx = len(unique_inputs)
+				unique_map[key] = idx
+				unique_inputs.append(None if key == "__NULL__" else key)
+				original_to_unique_idx.append(idx)
+	else:
+		unique_inputs = []
+		for s in inputs:
+			if s is None or str(s).strip() in ("", "nan", "None"):
+				unique_inputs.append(None)
+			else:
+				unique_inputs.append(str(s).strip())
+		original_to_unique_idx = list(range(len(unique_inputs)))
+	
+	# Build prompts
+	unique_prompts: List[Optional[str]] = []
+	for s in unique_inputs:
+		if s is None:
+			unique_prompts.append(None)
+		else:
+			prompt = get_prompt(
+				tokenizer=tokenizer,
+				description=s,
+				max_kws=min(max_kws, len(s.split())),
+				verbose=verbose,
+			)
+			unique_prompts.append(prompt)
+	
+	unique_results: List[Optional[List[str]]] = [None] * len(unique_prompts)
+	
+	valid_indices = [i for i, p in enumerate(unique_prompts) if p is not None]
+	if not valid_indices:
+		if verbose:
+			print(f" <!> No valid prompts found after deduplication => exiting")
+		return None
+	total_batches = math.ceil(len(valid_indices) / batch_size)
+
+	if verbose:
+		print(
+			f"Processing {len(valid_indices)} unique prompts "
+			f"in batches of {batch_size} samples => {total_batches} batches"
+		)
+	
+	def _parse_batch_parallel(
+		decoded_batch: List[str],
+		batch_indices: List[int],
+		batch_prompts: List[str],
+		model_id_: str,
+		max_kws_: int,
+		verbose_: bool,
+	) -> Dict[int, Optional[List[str]]]:
+		results_dict: Dict[int, Optional[List[str]]] = {}
+		
+		def _parse_one(local_i: int) -> Tuple[int, Optional[List[str]]]:
+			idx = batch_indices[local_i]
+			try:
+				parsed = parse_llm_response(
+					model_id=model_id_,
+					llm_response=decoded_batch[local_i],
+					max_kws=max_kws_,
+					verbose=verbose_,
+				)
+				return idx, parsed
+			except Exception as e:
+				if verbose_:
+					print(f"[FAILED] Parsing batch index {idx}: {e}")
+				return idx, None
+		
+		with concurrent.futures.ThreadPoolExecutor(max_workers=num_workers) as executor:
+			futures = {executor.submit(_parse_one, i): i for i in range(len(decoded_batch))}
+			for future in concurrent.futures.as_completed(futures):
+				idx, parsed = future.result()
+				results_dict[idx] = parsed
+		
+		return results_dict
+
+	# Batching: generate + parse
+	batches: List[Tuple[List[int], List[str]]] = []
+	for i in tqdm(range(0, len(valid_indices), batch_size), desc="Batching prompts", ncols=100):
+		batch_indices = valid_indices[i:i + batch_size]
+		batch_prompts = [unique_prompts[idx] for idx in batch_indices]
+		batches.append((batch_indices, batch_prompts))
+	
+	if verbose:
+		print(f"Batched {len(batches)} prompts into {len(batches)} batches of {batch_size} samples")
+
+	# resilient batch processing loop
+	for bn, (batch_indices, batch_prompts) in enumerate(tqdm(batches, desc="Processing (textual) batches", ncols=120)):
+		# Use deque for O(1) popleft / appendleft
+		queue = deque([(batch_indices, batch_prompts)])
+
+		while queue:
+			current_indices, current_prompts = queue.popleft()
+			current_size = len(current_indices)
+			if current_size == 0:
+				continue
+
+			tokenized = outputs = decoded = None
+			success = False
+			for attempt in range(max_retries + 1):
+					if attempt > 0 and verbose:
+							print(f"  🔄 Retry {attempt}/{max_retries} for sub-batch (size={current_size})")
+					try:
+							tokenized = tokenizer(
+									current_prompts,
+									return_tensors="pt",
+									truncation=True,
+									max_length=4096,
+									padding=True,
+							)
+							if device.type != "cpu":
+									tokenized = {k: v.to(device) for k, v in tokenized.items()}
+							gen_kwargs = dict(
+									**tokenized,
+									max_new_tokens=max_generated_tks,
+									do_sample=TEMPERATURE > 0.0,
+									temperature=TEMPERATURE,
+									top_p=TOP_P,
+									pad_token_id=tokenizer.pad_token_id,
+									eos_token_id=tokenizer.eos_token_id,
+									use_cache=True,
+							)
+							with torch.no_grad():
+									with torch.amp.autocast(
+											device_type=device.type,
+											enabled=torch.cuda.is_available(),
+											dtype=torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16,
+									):
+											outputs = model.generate(**gen_kwargs)
+							decoded = tokenizer.batch_decode(outputs, skip_special_tokens=True)
+							parsed_dict = _parse_batch_parallel(
+									decoded_batch=decoded,
+									batch_indices=current_indices,
+									batch_prompts=current_prompts,
+									model_id_=model_id,
+									max_kws_=max_kws,
+									verbose_=verbose,
+							)
+							for idx, parsed in parsed_dict.items():
+									unique_results[idx] = parsed
+							success = True
+							break  # Success
+					except RuntimeError as e:
+							err_msg = str(e).lower()
+							is_oom = "out of memory" in err_msg or "cuda out of memory" in err_msg
+							if not is_oom:
+								raise  # Re-raise non-OOM errors
+							if verbose:
+								print(f"  ❌ OOM on sub-batch size={current_size}, attempt {attempt+1}")
+							# Heavy cleanup only on OOM
+							if tokenized is not None:
+								del tokenized
+							if outputs is not None:
+								del outputs
+							if decoded is not None:
+								del decoded
+							tokenized = outputs = decoded = None
+							gc.collect()
+							if torch.cuda.is_available():
+								torch.cuda.empty_cache()
+								torch.cuda.synchronize()
+							if attempt < max_retries:
+									sleep_time = EXP_BACKOFF ** attempt
+									time.sleep(sleep_time)
+							else:
+								# Retries exhausted → split
+								if current_size > 1:
+									left_idx, left_prompt, right_idx, right_prompt = _split_batch(current_indices, current_prompts)
+									queue.appendleft((right_idx, right_prompt))
+									queue.appendleft((left_idx, left_prompt))
+									if verbose:
+										print(f"Splitting size {current_size} → {len(left_idx)} + {len(right_idx)}")
+								else:
+										# Truly failed single sample
+										idx = current_indices[0]
+										unique_results[idx] = None
+										if verbose:
+											print(f"  💥 Single sample {idx} failed with OOM")
+								break
+					finally:
+						# Lightweight guaranteed cleanup (no heavy GC here)
+						if tokenized is not None:
+							del tokenized
+						if outputs is not None:
+							del outputs
+						if decoded is not None:
+							del decoded
+						tokenized = outputs = decoded = None
+
+		# Periodic heavier cleanup (every 25 batches) to limit fragmentation
+		if torch.cuda.is_available() and (bn + 1) % 25 == 0:
+			gc.collect()
+			torch.cuda.empty_cache()
+			if verbose:
+				for device_idx in range(torch.cuda.device_count()):
+					mem_reserved = torch.cuda.memory_reserved(device_idx) / (1024**3)
+					mem_total = torch.cuda.get_device_properties(device_idx).total_memory / (1024**3)
+					print(f"  [MEM] GPU [{device_idx}] reserved: {mem_reserved:.1f}/{mem_total:.1f} GB")
+
+	# HYBRID FALLBACK: Retry failed items individually with query_local_llm
+	failed_indices = [
+		i
+		for i, result in enumerate(unique_results)
+		if result is None and unique_inputs[i] is not None
+	]
+
+	if failed_indices and verbose:
+		print(
+			f"Retrying {len(failed_indices)} failed {type(failed_indices)} item(s) "
+			f"=> query_local_llm [sequential processing]..."
+		)
+	
+	for idx in failed_indices:
+		desc = unique_inputs[idx]
+		# if verbose:
+		# 	print(f"Retrying item {idx}/{len(unique_inputs)}:\n{desc}\n")
+		try:
+			individual_result = query_local_llm(
+				model=model,
+				tokenizer=tokenizer,
+				text=desc,
+				device=device,
+				max_generated_tks=max_generated_tks,
+				max_kws=min(max_kws, len(desc.split())),
+				verbose=verbose,
+			)
+			unique_results[idx] = individual_result
+			if verbose and individual_result:
+				print(f"[SUCCES] Individual retry: {individual_result}")
+			elif verbose:
+				print(f"[FAILED] item {idx}:\n{desc}\n")
+				print("-"*100)
+		except Exception as e:
+			if verbose:
+				print(f"[FAILED] Individual retry for item {idx}: {e}")
+			unique_results[idx] = None
+
+	# Cleanup model and tokenizer
+	if torch.cuda.is_available():
+		torch.cuda.empty_cache()
+	del model, tokenizer
+	# gc.collect()
+
+	# Map unique_results back to original order
+	if verbose:
+		print(f"Mapping {len(original_to_unique_idx)} original_to_unique_idx unique results back to original order: {len(unique_results)}")
+	results: List[Optional[List[str]]] = []
+	for _, uniq_idx in enumerate(original_to_unique_idx):
+		results.append(unique_results[uniq_idx])
+
+	# Save results
+	if csv_file:
+		output_csv = csv_file.replace(".csv", "_llm_keywords.csv")
+		df['llm_keywords'] = results
+		df.to_csv(output_csv, index=False)
+		if verbose:
+			print(f"Saved {len(results)} keywords to {output_csv} {df.shape}\n{list(df.columns)}")
+			print(df.info(verbose=verbose, memory_usage="deep"))
+
+	if verbose:
+		n_ok, n_null = 0, 0
+
+		for inp, res in zip(inputs, results):
+			if res is not None:
+				n_ok += 1
+			if inp is None or str(inp).strip() in ("", "nan", "None"):
+				n_null += 1
+
+		total_results = len(results)
+
+		valid_inputs_count = total_results - n_null
+		n_failed = valid_inputs_count - n_ok
+
+		success_rate = (n_ok / valid_inputs_count) * 100 if valid_inputs_count > 0 else 0
+
+		print(
+			f"[STATS] {n_ok}/{valid_inputs_count} successful ({success_rate:.2f}%) "
+			f"{n_null} null, {n_failed} failed")
+
+		print(f"Total Extracted LLM-based keywords: {len(results)} {type(results)}")
+		print(f"[ELAPSED_TIME] {time.time() - st_t:.1f} sec")
+		print("="*100)
+
+	return results
+
+
 def extract_per_k_metrics(eval_result: Dict) -> Dict:
 	"""
 	Extract per-K mAP and Recall from the return dict of any evaluation function.
