@@ -139,10 +139,19 @@ $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --g
 	# To local laptop (must be executed locally):
 	# Puhti:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/mm*.out $HOME/datasets/trash/logs -vv
-	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/*json $HOME/datasets/trash/results/h4/output_roihu
-	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/viz $HOME/datasets/trash/results/h4/output_roihu
-	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/*unique_labels*.csv $HOME/datasets/trash/results/h4/output_roihu
+
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/clustering*json $HOME/datasets/trash/results/h4/output_roihu
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/unique*.csv $HOME/datasets/trash/results/h4/output_roihu
+
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/viz/*png $HOME/datasets/trash/results/h4/output_roihu/viz
 	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/*/seed_*/viz $HOME/datasets/trash/results/h4/output_roihu
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/seed*json $HOME/datasets/trash/results/h4/output_roihu
+
+	# send llm and vlm results to local for easier analysis and search:
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_*lm_keywords.csv $HOME/datasets/trash/results/h4/output_roihu
+
+	# txt files -> logs:
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/trash/logs/*.txt $HOME/datasets/trash/logs
 
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_multimodal.* $HOME/datasets/trash/results/h4 -vv
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/multimodal_canonical_labels/inference $HOME/datasets/trash/results/h4
@@ -558,11 +567,17 @@ $ grep "term1|term2|term3" large_log_file.txt
 # Search for a Term and Display Context
 $ grep -A 50 "Caption: 'No caption available.'" /scratch/project_2004072/ImACCESS/trash/logs/H4_mlm.out
 
+# Print each matching line only once, while preserving the order of its first occurrence in the log
+$ grep "STANDARIZED" /scratch/project_2004072/ImACCESS/trash/logs/mm_annot_0.out | awk '!seen[$0]++'
 # -A N → N lines after each match
 
 # -B N → N lines before each match
 
 # -C N → N lines before and after each match (symmetric)
+
+# dump it into a txt file instead of printing on terminal:
+$ grep "STANDARIZED" /scratch/project_2004072/ImACCESS/trash/logs/mm_annot_0.out | awk '!seen[$0]++' >> /scratch/project_2004072/ImACCESS/trash/logs/standardized_unique.txt
+$ grep -B 3 "VIRTUAL" /scratch/project_2004072/ImACCESS/trash/logs/mm_annot_0.out >> /scratch/project_2004072/ImACCESS/trash/logs/virtual_canonicals.txt
 
 ##################################################################################################
 # nohup:
@@ -597,6 +612,13 @@ $ find HISTORY_X4 -mindepth 1 -maxdepth 1 ! -name single_label -exec rm -rfv {} 
 # delete:
 $ find /media/volume/Nationalbiblioteket/trash/*nk_q_* -type f ! -newermt '2024-04-22 11:00:00' -exec rm -rfv {} \; # for same day delete
 $ find /media/volume/Nationalbiblioteket/dataframes_x19 -type f -mtime +N -exec rm {} \;
+
+# delete all files & directories execept one file:
+# check  before deleting:
+$ find outputs -mindepth 1 -maxdepth 1 ! -name 'spacy_ner_cache.json' -print
+# delete:
+$ find outputs -mindepth 1 -maxdepth 1 ! -name 'spacy_ner_cache.json' -exec rm -rfv -- {} +
+
 
 # symbolic link: use ln together with special pattern matching characters
 # links all the files with the extension ".xdh" in sub-directory project to current directory

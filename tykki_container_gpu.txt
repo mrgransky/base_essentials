@@ -184,6 +184,8 @@ export FLASH_ATTN_CUDA_ARCHS="90"
 export MAX_JOBS=1
 echo "FLASH_ATTN_CUDA_ARCHS is set to: ${FLASH_ATTN_CUDA_ARCHS}"
 echo "MAX_JOBS is set to: ${MAX_JOBS}"
+
+# show all the logs in terminal (-v): too much texts
 # pip install flash-attn --no-build-isolation --no-cache-dir -v
 # drop the -v to avoid spamming the logs
 pip install flash-attn --no-build-isolation --no-cache-dir -v 2>&1 | tee /tmp/flash_attn_build.log
