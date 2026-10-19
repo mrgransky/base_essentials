@@ -277,6 +277,9 @@ pip install \
 	natsort \
 	openpyxl \
 	csvkit \
+	pypdf \
+	docling \
+	pdf2image \
 	fastcluster \
 	certifi \
 	sentencepiece

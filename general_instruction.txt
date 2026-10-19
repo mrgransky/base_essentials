@@ -51,14 +51,18 @@ $ module load cray-python
 # info about OS:
 $ cat /etc/os-release
 
-# run interactive gpu [Roihu]:
-$ srun -J gpu_interactive_test --account=project_2014707 --partition=gputest --gres=gpu:gh200:4 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
+# [Roihu]:
+# interactive gputest 
+$ srun -J gpu_interactive_test --account=project_2020458 --partition=gputest --gres=gpu:gh200:4 --time=0-00:15:00 --mem=64G --cpus-per-task=40 --pty /bin/bash -i
+
+# gpumedium:
+$ srun -J gpu_interactive --account=project_2014707 --partition=gpularge --gres=gpu:gh200:1 --time=0-04:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
 
 # cpu:
 $ srun -J interactive_cpu --account=project_2004072 --partition=interactive --time=00-13:00:00 --mem=62G --ntasks=1 --cpus-per-task=8 --pty /bin/bash -i
 
 # LUMI:
-$ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --gres=gpu:mi250:1 --time=0-02:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
+$ srun -J gpu_interactive_test --account=project_462001213 --partition=small-g --gres=gpu:mi250:1 --time=0-02:15:00 --mem=128G --cpus-per-task=10 --pty /bin/bash -i
 
 2. mount working_folders from narvi computer to local: (type in local machine)
 	$ sshfs -o IdentityFile=/home/xenial/narvi_key/xenial-narvi-key alijani@narvi.tut.fi:example_folder /home/xenial/narvi_ws/
@@ -84,7 +88,7 @@ $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --g
 	
 	open firefox:
 		token pass from remote terminal 
-		
+
 5. copy from local -> server:
 	# Puhti:
 	$ rsync -avzhm --stats --progress $HOME/Datasets/Oxford_RobotCar/rtk/2015-11-12-11-22-05/rtk.csv alijanif@puhti.csc.fi:/scratch/project_2004072/OxfordRobotCar/2015-11-12-11-22-05/gps/
@@ -97,6 +101,7 @@ $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --g
 	# local laptop => Puhti: [must be executed in local laptop terminal]:
 	$ rsync -avzhm --stats --progress $HOME/datasets/Nationalbiblioteket/dataframes_x732/*.json alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732 -vv
 	$ rsync -avzhm --stats --progress $HOME/datasets/NLF/*.log alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/NLF_Pseudonymized_Logs -vv
+	$ rsync -avzhm --stats --progress $HOME/datasets/automotive_finance roihu-gpu:/scratch/project_2004072/datasets -vv
 
 	# Pouta => Puhti: (Execute in Pouta terminal)
 	$ rsync -avzhm --stats --progress /media/volume/Nationalbiblioteket/dataframes_xx/nike* alijanif@puhti.csc.fi:/scratch/project_2004072/Nationalbiblioteket/dataframes_x732/ -vv
@@ -139,6 +144,9 @@ $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --g
 	# To local laptop (must be executed locally):
 	# Puhti:
 	$ rsync -avzh --stats --progress alijanif@puhti.csc.fi:/scratch/project_2004072/ImACCESS/trash/logs/mm*.out $HOME/datasets/trash/logs -vv
+
+	# Roihu:
+	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/metadata_multi_label_*lm_keywords.csv $HOME/datasets/WW_DATASETs/HISTORY_X4
 
 	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/clustering*json $HOME/datasets/trash/results/h4/output_roihu
 	$ rsync -avzh --stats --progress roihu-gpu:/scratch/project_2004072/ImACCESS/WW_DATASETs/HISTORY_X4/outputs/unique*.csv $HOME/datasets/trash/results/h4/output_roihu
@@ -300,8 +308,7 @@ $ srun -J gpu_interactive_test --account=project_462001213 --partition=dev-g --g
 	$ conda remove scipy curl # 2 packages from current environment
 	
 	# all installed packages in my conda env
-	$ conda list --show-channel-urls 
-	$ pip list
+	$ conda list --show-channel-urls; pip list
 	$ pip show numpy # check versions and info
 
 	# Installing torch
@@ -675,10 +682,10 @@ $ vim file.jsonl # open the file
 /'\s*[A-Z][A-Z0-9 ,.-]*\s*'
 
 Commenting multiple lines:
-1. visually select the text rows (Shift + V in Vim and select the lines)
+1. visually select the text rows (Shift + V in and select the lines)
 2. :norm i#
 
 Uncommenting multiple lines:
-1. visually select the text rows (Shift + V in Vim and select the lines)
+1. visually select the text rows (Shift + V in and select the lines)
 2. :norm ^x
 #####################################################
