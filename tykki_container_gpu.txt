@@ -172,15 +172,13 @@ print('Device:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else
 pip install einops packaging ninja psutil
 
 # install flash-attn ALONE. If this fails, we want to know immediately.
-echo "--- Compiling Flash Attention ---"
 # export FLASH_ATTENTION_FORCE_BUILD=TRUE
 # export FLASH_ATTENTION_FORCE_CXX11_ABI=TRUE
 export FLASH_ATTN_CUDA_ARCHS="90"
-export MAX_JOBS=1
-echo "FLASH_ATTN_CUDA_ARCHS is set to: ${FLASH_ATTN_CUDA_ARCHS}"
+export MAX_JOBS=8
 echo "MAX_JOBS is set to: ${MAX_JOBS}"
 
-# Compile causal-conv1d
+echo "Installing causal-conv1d ---"
 pip install causal-conv1d --no-build-isolation --no-cache-dir -v
 echo "--- Verifying causal-conv1d Installation ---"
 python -c "
@@ -191,6 +189,9 @@ print('causal-conv1d imported successfully! Version:', causal_conv1d.__version__
 # show all the logs in terminal (-v): too much texts
 # pip install flash-attn --no-build-isolation --no-cache-dir -v
 # drop the -v to avoid spamming the logs
+echo "--- Compiling Flash Attention ---"
+echo "FLASH_ATTN_CUDA_ARCHS is set to: ${FLASH_ATTN_CUDA_ARCHS}"
+
 pip install flash-attn --no-build-isolation --no-cache-dir -v 2>&1 | tee /tmp/flash_attn_build.log
 
 echo "--- Verifying Flash Attention Installation ---"
@@ -203,13 +204,13 @@ print('LD_LIBRARY_PATH:', os.environ.get('LD_LIBRARY_PATH', 'Not set'))
 print('Platform:', platform.platform())
 print(platform.libc_ver())
 try:
-	import flash_attn
-	print('Flash Attention imported successfully!')
-	print('Flash Attention version:', flash_attn.__version__)
+  import flash_attn
+  print('Flash Attention imported successfully!')
+  print('Flash Attention version:', flash_attn.__version__)
 except ImportError as e:
-	print('Failed to import flash_attn:', e)
-	import traceback
-	traceback.print_exc()
+  print('Failed to import flash_attn:', e)
+  import traceback
+  traceback.print_exc()
   sys.exit(1)
 "
 
@@ -218,81 +219,81 @@ echo "--- Installing fasttext ---"
 pip install fasttext --no-binary :all:
 
 pip install \
-	mediapipe \
-	lingua-language-detector \
-	langdetect \
-	libvoikko 
+  mediapipe \
+  lingua-language-detector \
+  langdetect \
+  libvoikko 
 
 echo "Installing transformers-related packages"
 pip install \
-	transformers \
-	bitsandbytes \
-	accelerate \
-	openai \
-	sentence-transformers \
-	keybert
+  transformers \
+  bitsandbytes \
+  accelerate \
+  openai \
+  sentence-transformers \
+  keybert
 
 echo "Installing NLP packages"
 pip install \
-	spacy \
-	stanza \
-	trankit \
-	nltk \
-	rake-nltk
+  spacy \
+  stanza \
+  trankit \
+  nltk \
+  rake-nltk
 
 echo "Installing other packages"
 pip install \
-	blis \
-	scikit-image \
-	scikit-multilearn \
-	kneed \
-	hdbscan \
-	PyDrive2 \
-	google-api-python-client \
-	optree \
-	ftfy \
-	tabulate \
-	netCDF4 \
-	h5netcdf \
-	python-swiftclient \
-	rasterio \
-	geopandas \
-	pipdeptree \
-	jupyterlab \
-	ipywidgets \
-	nbclassic \
-	fuzzywuzzy \
-	rapidfuzz \
-	plotly \
-	pyarrow \
-	flash-linear-attention \
-	pydantic \
-	pycocotools \
-	dill \
-	matplotlib \
-	seaborn \
-	requests \
-	selenium \
-	beautifulsoup4 \
-	lxml \
-	html5lib \
-	pyenchant \
-	pyspelling \
-	wordcloud \
-	tenacity \
-	natsort \
-	openpyxl \
-	csvkit \
-	fastcluster \
+  blis \
+  scikit-image \
+  scikit-multilearn \
+  kneed \
+  hdbscan \
+  PyDrive2 \
+  google-api-python-client \
+  optree \
+  ftfy \
+  tabulate \
+  netCDF4 \
+  h5netcdf \
+  python-swiftclient \
+  rasterio \
+  geopandas \
+  pipdeptree \
+  jupyterlab \
+  ipywidgets \
+  nbclassic \
+  fuzzywuzzy \
+  rapidfuzz \
+  plotly \
+  pyarrow \
+  flash-linear-attention \
+  pydantic \
+  pycocotools \
+  dill \
+  matplotlib \
+  seaborn \
+  requests \
+  selenium \
+  beautifulsoup4 \
+  lxml \
+  html5lib \
+  pyenchant \
+  pyspelling \
+  wordcloud \
+  tenacity \
+  natsort \
+  openpyxl \
+  csvkit \
+  fastcluster \
   umap-learn \
   pacmap \
   phate \
-	pypdf \
-	docling \
-	pdf2image \
-	certifi \
+  pypdf \
+  docling \
+  pdf2image \
+  certifi \
   qwen-vl-utils \
-	sentencepiece
+  sentencepiece
 
 echo "Checking installed packages"
 conda list --show-channel-urls
@@ -306,6 +307,10 @@ pipdeptree --reverse --packages flash-attn
 
 # #####################################################################
 
+
+# verify there are no tabs before re-running:
+$ cat -A packages_gpu.sh | grep '\^I'
+
 $ cat packages_gpu.sh
 $ export PATH=$(echo $PATH | tr ':' '\n' | grep -v 'CondaCSC_gpu' | paste -sd:)
 $ conda-containerize update CondaCSC_gpu --post-install packages_gpu.sh
@@ -315,5 +320,5 @@ in case of any problem in loading LD_LIBRARY_PATH:
 # Fix for ICU/sqlite in Singularity containers
 GENERIC_GCC_PATH=$(ls -d /appl/spack/v023/install-tree/gcc-8.5.0/gcc-14.2.0-*/lib64 2>/dev/null | head -n 1)
 if [ -n "$GENERIC_GCC_PATH" ]; then
-		export SINGULARITYENV_LD_LIBRARY_PATH="$GENERIC_GCC_PATH"
+    export SINGULARITYENV_LD_LIBRARY_PATH="$GENERIC_GCC_PATH"
 fi
