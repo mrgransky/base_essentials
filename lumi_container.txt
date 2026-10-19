@@ -162,7 +162,7 @@ echo "--- Compiling Flash Attention [ROCm] ---"
 # CUDA: FLASH_ATTN_CUDA_ARCHS="90" = H100
 # ROCm: GPU_ARCHS="gfx90a" = MI250X on LUMI-G
 export GPU_ARCHS="gfx90a"
-export MAX_JOBS=8
+export MAX_JOBS=16
 
 echo "Installing causal-conv1d ---"
 pip install causal-conv1d --no-build-isolation --no-cache-dir -v
